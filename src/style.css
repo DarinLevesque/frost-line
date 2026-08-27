@@ -231,6 +231,9 @@ body { background: var(--paper); color: var(--ink); }
 .connection-dot--fallback { background: #c0392b; box-shadow: 0 0 0 2px rgba(192, 57, 43, 0.18); }
 .connection-dot--not_configured { background: #9aa5a2; }
 
+.connection-modal[hidden] {
+  display: none;
+}
 .connection-modal {
   position: fixed;
   inset: 0;
