@@ -1,37 +1,33 @@
 import type { GrowthStage } from "./types";
 
 /**
- * Demo property: Caymus Vineyards, Rutherford, Napa Valley, CA.
- * 8700 Conn Creek Rd, Rutherford, CA 94573.
+ * Demo property: Stone Tower Winery, Leesburg, Virginia (Loudoun County).
+ * 19925 Hogback Mountain Rd, Leesburg, VA 20175.
  *
- * The coordinates below are an ​APPROXIMATE map center only (general-knowledge
- * geocoding, not a surveyed parcel boundary) — good enough to center the map
- * and seed a plausible demo block. The whole point of the app is that the
- * real boundary gets drawn by hand over satellite imagery, so precision here
- * doesn't matter; just refine it once you're looking at the map.
+ * Center is Google Maps' business-listing pin for the address (39.0646116,
+ * -77.6367452) — the tasting-room building, not a parcel centroid. Zoom is
+ * tuned to roughly frame the whole vineyard block layout.
  */
 export const DEMO_SITE = {
-  name: "Caymus Vineyards (approx.)",
-  address: "8700 Conn Creek Rd, Rutherford, CA 94573",
-  center: { lat: 38.4605, lng: -122.4186 },
-  zoom: 17,
+  name: "Stone Tower Winery",
+  address: "19925 Hogback Mountain Rd, Leesburg, VA 20175",
+  center: { lat: 39.0648, lng: -77.6418 },
+  zoom: 16,
 } as const;
 
-/** A rough placeholder vineyard block near the demo site, ~5 acres. Replace by drawing the real block. */
+/**
+ * Traced by hand over Esri satellite imagery (the same basemap the app
+ * renders — see components/map.ts) to match Stone Tower Winery's actual
+ * vineyard block layout, 2026-08-27. Encompasses the working vineyard
+ * blocks across the property; buildings, the tasting-room courtyard, and
+ * ponds are carved out where the blocks visibly stop short of them.
+ */
 export const DEMO_BOUNDARY_GEOJSON = {
   type: "Feature",
-  properties: { name: "Demo block (placeholder — redraw over satellite imagery)" },
+  properties: { name: "Stone Tower Winery vineyard blocks" },
   geometry: {
-    type: "Polygon",
-    coordinates: [
-      [
-        [-122.4200, 38.4598],
-        [-122.4192, 38.4598],
-        [-122.4192, 38.4612],
-        [-122.4200, 38.4612],
-        [-122.4200, 38.4598],
-      ],
-    ],
+    type: "MultiPolygon",
+    coordinates: [[[[-77.6449728, 39.0688631], [-77.642473, 39.066714], [-77.6427412, 39.0653312], [-77.644887, 39.0639401], [-77.6468503, 39.0639401], [-77.6488996, 39.0640817], [-77.648803, 39.0661559], [-77.6449728, 39.0688631]]], [[[-77.6427519, 39.065982], [-77.640574, 39.0657738], [-77.6382351, 39.0653074], [-77.6361537, 39.0644996], [-77.6362395, 39.0635502], [-77.6368403, 39.0632171], [-77.6368403, 39.0625425], [-77.6361537, 39.0622677], [-77.6361537, 39.0613932], [-77.6392758, 39.0609934], [-77.6427519, 39.0611267], [-77.6442218, 39.0619345], [-77.6442218, 39.0644996], [-77.6434493, 39.0655739], [-77.6427519, 39.065982]]]],
   },
 } as const;
 

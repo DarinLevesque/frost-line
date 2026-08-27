@@ -36,7 +36,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
       <section class="panel-section">
         <h2>1. Property boundary</h2>
-        <p class="hint">Draw one or more polygons — separate blocks are fine, they're combined automatically into one property when you analyze. Or load the demo block near Caymus Vineyards to start.</p>
+        <p class="hint">Draw one or more polygons — separate blocks are fine, they're combined automatically into one property when you analyze. Or load the demo blocks at Stone Tower Winery to start.</p>
         <div class="btn-row">
           <button id="load-demo" class="btn">Load demo block</button>
           <button id="clear-boundary" class="btn btn-ghost">Clear boundary</button>
@@ -55,8 +55,36 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </select>
         </label>
         <label class="field">
-          Prevailing cold-night wind (° blowing toward)
-          <input id="wind-bearing" type="number" min="0" max="359" value="150" />
+          Prevailing cold-night wind (blowing toward)
+          <div class="compass-wrap">
+            <svg
+              id="wind-compass"
+              class="compass"
+              viewBox="0 0 140 140"
+              width="140"
+              height="140"
+              role="slider"
+              aria-label="Prevailing cold-night wind direction, blowing toward"
+              aria-valuemin="0"
+              aria-valuemax="359"
+              aria-valuenow="150"
+              tabindex="0"
+            >
+              <circle cx="70" cy="70" r="62" class="compass-ring" />
+              <g id="compass-ticks"></g>
+              <text x="70" y="15" class="compass-label" text-anchor="middle">N</text>
+              <text x="125" y="74" class="compass-label" text-anchor="middle">E</text>
+              <text x="70" y="133" class="compass-label" text-anchor="middle">S</text>
+              <text x="15" y="74" class="compass-label" text-anchor="middle">W</text>
+              <g id="compass-needle">
+                <line x1="70" y1="70" x2="70" y2="22" class="compass-needle-line" />
+                <polygon points="70,13 64,26 76,26" class="compass-needle-head" />
+              </g>
+              <circle cx="70" cy="70" r="4" class="compass-hub" />
+            </svg>
+            <div class="compass-readout" id="compass-readout">150° · SSE</div>
+          </div>
+          <input id="wind-bearing" type="hidden" value="150" />
         </label>
         <label class="field">
           Crop value ($/acre)
@@ -104,6 +132,94 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 
 const frostMap = initFrostMap("map");
 let currentBoundary: Boundary | null = null;
+
+initWindCompass();
+
+/**
+ * Click/drag/keyboard-driven compass for "prevailing cold-night wind,
+ * blowing toward" — replaces a bare degree number field with something you
+ * can actually point. Bearing convention matches placement.ts exactly:
+ * 0 = wind blows toward true north, 90 = toward east, clockwise. Writes
+ * into the existing hidden #wind-bearing input, so nothing downstream
+ * (the analyze handler, planPlacements) needs to know this exists.
+ */
+function initWindCompass() {
+  const COMPASS_POINTS = [
+    "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+    "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
+  ];
+  const compassPointLabel = (deg: number) =>
+    COMPASS_POINTS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
+
+  const svg = document.querySelector<SVGSVGElement>("#wind-compass")!;
+  const needle = document.querySelector<SVGGElement>("#compass-needle")!;
+  const ticksGroup = document.querySelector<SVGGElement>("#compass-ticks")!;
+  const readout = document.querySelector<HTMLElement>("#compass-readout")!;
+  const hiddenInput = document.querySelector<HTMLInputElement>("#wind-bearing")!;
+
+  const CENTER = 70;
+
+  // 24 tick marks (every 15°), every 3rd one drawn longer/bolder as a major tick.
+  const ticksSvg = Array.from({ length: 24 }, (_, i) => {
+    const deg = i * 15;
+    const major = deg % 90 === 0;
+    const r1 = major ? 50 : 55;
+    const cls = major ? "compass-tick compass-tick-major" : "compass-tick";
+    return `<line x1="${CENTER}" y1="${70 - r1}" x2="${CENTER}" y2="${70 - 62}" class="${cls}" transform="rotate(${deg} ${CENTER} ${CENTER})" />`;
+  }).join("");
+  ticksGroup.innerHTML = ticksSvg;
+
+  function setBearing(deg: number) {
+    const normalized = ((Math.round(deg) % 360) + 360) % 360;
+    needle.setAttribute("transform", `rotate(${normalized} ${CENTER} ${CENTER})`);
+    readout.textContent = `${normalized}° · ${compassPointLabel(normalized)}`;
+    svg.setAttribute("aria-valuenow", String(normalized));
+    hiddenInput.value = String(normalized);
+  }
+
+  function bearingFromEvent(ev: PointerEvent): number {
+    const rect = svg.getBoundingClientRect();
+    // Map the pointer into the SVG's own 140x140 viewBox coordinate space,
+    // since the rendered box (rect) can be a different CSS size.
+    const scale = 140 / rect.width;
+    const x = (ev.clientX - rect.left) * scale - CENTER;
+    const y = (ev.clientY - rect.top) * scale - CENTER;
+    // atan2(x, -y): 0 rad points up (north), increases clockwise — exactly
+    // compass-bearing convention, no separate 90°-offset correction needed.
+    const deg = (Math.atan2(x, -y) * 180) / Math.PI;
+    return deg;
+  }
+
+  let dragging = false;
+  svg.addEventListener("pointerdown", (ev) => {
+    dragging = true;
+    svg.setPointerCapture(ev.pointerId);
+    setBearing(bearingFromEvent(ev));
+  });
+  svg.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    setBearing(bearingFromEvent(ev));
+  });
+  const stopDragging = (ev: PointerEvent) => {
+    dragging = false;
+    if (svg.hasPointerCapture(ev.pointerId)) svg.releasePointerCapture(ev.pointerId);
+  };
+  svg.addEventListener("pointerup", stopDragging);
+  svg.addEventListener("pointercancel", stopDragging);
+
+  svg.addEventListener("keydown", (ev) => {
+    const current = Number(hiddenInput.value);
+    if (ev.key === "ArrowLeft" || ev.key === "ArrowDown") {
+      ev.preventDefault();
+      setBearing(current - 5);
+    } else if (ev.key === "ArrowRight" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      setBearing(current + 5);
+    }
+  });
+
+  setBearing(Number(hiddenInput.value) || 150);
+}
 
 const creditsBarFill = document.querySelector<HTMLElement>("#credits-bar-fill")!;
 const creditsLine = document.querySelector<HTMLElement>("#credits-line")!;
