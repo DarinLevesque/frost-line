@@ -158,14 +158,28 @@ function isRetryable(err: unknown): boolean {
   );
 }
 
+/**
+ * Retry budget bumped from a single retry to two (three attempts total)
+ * with a short backoff, after a live burst of transient upstream 500s
+ * (confirmed via Vercel runtime logs + a direct re-test against FortyGuard's
+ * API, which round-tripped cleanly — so the API itself wasn't down, just
+ * briefly flaky) showed one retry sometimes wasn't enough to ride out a
+ * short blip.
+ */
+const RETRY_BACKOFF_MS = [1500, 3000];
+
 async function withOneRetry<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (!isRetryable(err)) throw err;
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    return fn();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryable(err) || attempt === RETRY_BACKOFF_MS.length) throw err;
+      await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
+    }
   }
+  throw lastErr;
 }
 
 export interface LiveRiskQuery {

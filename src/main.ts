@@ -11,8 +11,15 @@ import {
   DEMO_BOUNDARY_GEOJSON,
   DEMO_SITE,
   LT50_THRESHOLDS_F,
+  FORTYGUARD_NOTES,
 } from "./lib/constants";
 import type { GrowthStage, RiskCell } from "./lib/types";
+import { PARAMETER_INFO } from "./lib/parameterInfo";
+import {
+  DEFAULT_WIND_MACHINE_PROFILE,
+  COMING_SOON_WIND_MACHINE_PROFILES,
+  estimateMachineCost,
+} from "./lib/machineCost";
 
 /** Default historical window: last spring's frost season, a plausible demo range that's always in the past. Kept to <= 1 month per FortyGuard's range-of-days cap. */
 function defaultFrostSeasonRange(): { start: string; end: string } {
@@ -20,6 +27,16 @@ function defaultFrostSeasonRange(): { start: string; end: string } {
   const year = now.getUTCMonth() < 6 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
   return { start: `${year}-04-01`, end: `${year}-04-30` };
 }
+
+/**
+ * Bounds for the date pickers: FortyGuard's confirmed data coverage is
+ * 2019-01-01 through ~12h ahead of now (see FORTYGUARD_NOTES). The default
+ * *prefilled* window above stays a single representative frost-season
+ * month (a single request is capped at ~1 month), but the pickers'
+ * min/max now unlock the entire range so any past season is reachable.
+ */
+const HISTORY_MIN_DATE = FORTYGUARD_NOTES.historyStart;
+const HISTORY_MAX_DATE = new Date().toISOString().slice(0, 10);
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="layout">
@@ -60,7 +77,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <section class="panel-section">
         <h2>2. Frost parameters</h2>
         <label class="field">
-          Growth stage
+          <span class="field-label-row">
+            Growth stage
+            <button type="button" class="info-icon" data-info-key="growth-stage" aria-label="What is this?">i</button>
+          </span>
           <select id="growth-stage">
             <option value="greenSwollenBud">Green swollen bud (26°F)</option>
             <option value="budBurst" selected>Bud burst (28°F)</option>
@@ -69,7 +89,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </select>
         </label>
         <label class="field">
-          Prevailing cold-night wind (blowing toward)
+          <span class="field-label-row">
+            Prevailing cold-night wind (blowing toward)
+            <button type="button" class="info-icon" data-info-key="wind-bearing" aria-label="What is this?">i</button>
+          </span>
           <div class="compass-wrap">
             <svg
               id="wind-compass"
@@ -110,20 +133,79 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           </div>
         </label>
         <label class="field">
-          Crop value ($/acre)
+          <span class="field-label-row">
+            Crop value ($/acre)
+            <button type="button" class="info-icon" data-info-key="crop-value" aria-label="What is this?">i</button>
+          </span>
           <input id="crop-value" type="number" min="0" step="500" value="35000" />
         </label>
         <label class="field">
-          Frost nights / season (for savings estimate)
+          <span class="field-label-row">
+            Frost nights / season (for savings estimate)
+            <button type="button" class="info-icon" data-info-key="frost-nights" aria-label="What is this?">i</button>
+          </span>
           <input id="frost-nights" type="number" min="0" max="365" value="10" />
         </label>
         <label class="field">
-          Historical window start (FortyGuard data, ≤ 1 month)
-          <input id="history-start" type="date" value="${defaultFrostSeasonRange().start}" />
+          <span class="field-label-row">
+            Historical window (FortyGuard data, ≤ 1 month per request)
+            <button type="button" class="info-icon" data-info-key="history-window" aria-label="What is this?">i</button>
+          </span>
+          <div class="date-range-row">
+            <input id="history-start" type="date" min="${HISTORY_MIN_DATE}" max="${HISTORY_MAX_DATE}" value="${defaultFrostSeasonRange().start}" />
+            <span class="date-range-sep">to</span>
+            <input id="history-end" type="date" min="${HISTORY_MIN_DATE}" max="${HISTORY_MAX_DATE}" value="${defaultFrostSeasonRange().end}" />
+          </div>
+          <p class="hint">FortyGuard's confirmed data range is ${HISTORY_MIN_DATE} through today — defaults to last spring's frost month; pick any other ≤ 1 month window within that full range.</p>
+        </label>
+      </section>
+
+      <section class="panel-section">
+        <h2>3. Wind machine</h2>
+        <label class="field">
+          <span class="field-label-row">
+            Machine profile
+            <button type="button" class="info-icon" data-info-key="machine-profile" aria-label="What is this?">i</button>
+          </span>
+          <select id="machine-profile">
+            <option value="${DEFAULT_WIND_MACHINE_PROFILE.id}" selected>${DEFAULT_WIND_MACHINE_PROFILE.name}</option>
+            ${COMING_SOON_WIND_MACHINE_PROFILES.map(
+              (p) => `<option value="${p.id}" disabled>${p.name}</option>`
+            ).join("")}
+          </select>
+          <p class="hint">Other sizes are <span class="badge-soon">coming soon</span> — every placement below uses the default profile, the machine measured in the dissertation's field trial.</p>
+        </label>
+        <div class="machine-profile-card">
+          <div class="machine-profile-name">${DEFAULT_WIND_MACHINE_PROFILE.name}</div>
+          <div class="machine-profile-specs">${DEFAULT_WIND_MACHINE_PROFILE.specSummary}</div>
+        </div>
+        <label class="field">
+          <span class="field-label-row">
+            Installed cost ($/machine)
+            <button type="button" class="info-icon" data-info-key="installed-cost" aria-label="What is this?">i</button>
+          </span>
+          <input id="installed-cost" type="number" min="0" step="1000" value="30000" />
         </label>
         <label class="field">
-          Historical window end
-          <input id="history-end" type="date" value="${defaultFrostSeasonRange().end}" />
+          <span class="field-label-row">
+            Fuel &amp; runtime
+            <button type="button" class="info-icon" data-info-key="fuel-runtime" aria-label="What is this?">i</button>
+          </span>
+          <div class="fuel-inputs">
+            <div class="fuel-input-group">
+              <input id="fuel-burn-rate" type="number" min="0" step="0.5" value="12.5" />
+              <span class="fuel-unit">gal propane/hr</span>
+            </div>
+            <div class="fuel-input-group">
+              <input id="fuel-price" type="number" min="0" step="0.01" value="2.67" />
+              <span class="fuel-unit">$/gal</span>
+            </div>
+            <div class="fuel-input-group">
+              <input id="fuel-hours-per-night" type="number" min="0" step="0.5" value="5" />
+              <span class="fuel-unit">hrs run / frost night</span>
+            </div>
+          </div>
+          <p class="hint">Defaults: ~$30k installed and 12.5 gal/hr propane (UC Cooperative Extension Napa-area cost study), $2.67/gal (U.S. EIA national average), 5 hrs run per frost night.</p>
         </label>
       </section>
 
@@ -143,13 +225,27 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="stat"><strong id="stat-acres">–</strong><span>acres protected / analyzed</span></div>
         </div>
         <div class="savings-box">
-          <div class="savings-label">Estimated annual savings</div>
+          <div class="savings-label">Estimated annual crop savings</div>
           <div class="savings-value" id="stat-savings">–</div>
+        </div>
+        <div class="cost-box" id="cost-box">
+          <div class="cost-row"><span>Installed cost (machines × $/machine)</span><strong id="stat-installed-cost">–</strong></div>
+          <div class="cost-row"><span>Estimated annual fuel cost</span><strong id="stat-fuel-cost">–</strong></div>
+          <div class="cost-row cost-row-net"><span>Net annual savings (after fuel)</span><strong id="stat-net-savings">–</strong></div>
+          <div class="cost-row"><span>Rough payback period</span><strong id="stat-payback">–</strong></div>
         </div>
         <ul class="assumptions" id="assumptions"></ul>
       </section>
     </aside>
     <main id="map"></main>
+  </div>
+
+  <div class="info-popover" id="info-popover" hidden role="dialog" aria-label="Parameter info">
+    <div class="info-popover-header">
+      <strong id="info-popover-title"></strong>
+      <button type="button" id="info-popover-close" class="info-popover-close" aria-label="Close">✕</button>
+    </div>
+    <div class="info-popover-body" id="info-popover-body"></div>
   </div>
 
   <div class="connection-modal" id="connection-modal" hidden>
@@ -515,6 +611,75 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape" && !connectionModal.hidden) closeConnectionModal();
 });
 
+/**
+ * Info icons: one shared floating popover, positioned next to whichever
+ * icon was clicked, filled from src/lib/parameterInfo.ts. Deliberately one
+ * DOM element reused for every field instead of one popover per field —
+ * keeps this generic as more fields get icons later.
+ */
+const infoPopover = document.querySelector<HTMLElement>("#info-popover")!;
+const infoPopoverTitle = document.querySelector<HTMLElement>("#info-popover-title")!;
+const infoPopoverBody = document.querySelector<HTMLElement>("#info-popover-body")!;
+const infoPopoverClose = document.querySelector<HTMLButtonElement>("#info-popover-close")!;
+
+function closeInfoPopover() {
+  infoPopover.hidden = true;
+  delete infoPopover.dataset.openFor;
+}
+
+function openInfoPopover(key: string, anchor: HTMLElement) {
+  const info = PARAMETER_INFO[key];
+  if (!info) return;
+  infoPopoverTitle.textContent = info.title;
+  infoPopoverBody.innerHTML = `
+    <p><strong>What it does</strong><br>${info.whatItDoes}</p>
+    <p><strong>Where to get it</strong><br>${info.whereToGetIt}</p>
+    <p><strong>Dissertation connection</strong><br>${info.dissertationConnection}</p>
+  `;
+  infoPopover.dataset.openFor = key;
+  infoPopover.hidden = false;
+
+  const rect = anchor.getBoundingClientRect();
+  const popRect = infoPopover.getBoundingClientRect();
+  const margin = 10;
+  let left = rect.left;
+  left = Math.min(left, window.innerWidth - popRect.width - margin);
+  left = Math.max(margin, left);
+  let top = rect.bottom + margin;
+  if (top + popRect.height > window.innerHeight - margin) {
+    top = Math.max(margin, rect.top - popRect.height - margin);
+  }
+  infoPopover.style.left = `${left}px`;
+  infoPopover.style.top = `${top}px`;
+}
+
+document.querySelectorAll<HTMLButtonElement>(".info-icon").forEach((btn) => {
+  btn.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const key = btn.dataset.infoKey;
+    if (!key) return;
+    if (!infoPopover.hidden && infoPopover.dataset.openFor === key) {
+      closeInfoPopover();
+      return;
+    }
+    openInfoPopover(key, btn);
+  });
+});
+infoPopoverClose.addEventListener("click", closeInfoPopover);
+document.addEventListener("click", (ev) => {
+  if (infoPopover.hidden) return;
+  const target = ev.target as HTMLElement;
+  if (infoPopover.contains(target) || target.closest(".info-icon")) return;
+  closeInfoPopover();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !infoPopover.hidden) closeInfoPopover();
+});
+window.addEventListener("resize", () => {
+  if (!infoPopover.hidden) closeInfoPopover();
+});
+
 const resultsSection = document.querySelector<HTMLElement>("#results")!;
 const clearResultsBtn = document.querySelector<HTMLButtonElement>("#clear-results")!;
 
@@ -617,7 +782,7 @@ analyzeBtn.addEventListener("click", async () => {
     sourceNote =
       err instanceof FortyGuardConfigError
         ? "Simulated data — no FortyGuard API key configured yet (see .env.example)."
-        : "Simulated data — the live FortyGuard request failed; check the browser console (or the connection badge above) for details.";
+        : "Simulated data — the live FortyGuard request failed after retrying (likely a brief upstream hiccup, not a bad API key — the credits badge above checks a separate, lighter endpoint). Click Analyze again in a moment; see the connection badge for the exact error.";
   }
 
   analyzeBtn.disabled = false;
@@ -634,6 +799,31 @@ analyzeBtn.addEventListener("click", async () => {
     historicalFrostNightsPerSeason: frostNightsPerSeason,
   });
 
+  // 5. The other half of the picture: what it costs to install and run the
+  //    machines just recommended, netted against the gross crop savings.
+  const installedCostPerMachine = Number(
+    document.querySelector<HTMLInputElement>("#installed-cost")!.value
+  );
+  const fuelBurnGalPerHour = Number(
+    document.querySelector<HTMLInputElement>("#fuel-burn-rate")!.value
+  );
+  const fuelPricePerGal = Number(
+    document.querySelector<HTMLInputElement>("#fuel-price")!.value
+  );
+  const hoursPerFrostNight = Number(
+    document.querySelector<HTMLInputElement>("#fuel-hours-per-night")!.value
+  );
+  const machineCost = estimateMachineCost({
+    machineCount: placements.length,
+    installedCostPerMachine,
+    fuelBurnGalPerHour,
+    fuelPricePerGal,
+    hoursPerFrostNight,
+    frostNightsPerSeason,
+    grossAnnualSavingsLow: savings.estimatedAnnualSavingsLow,
+    grossAnnualSavingsHigh: savings.estimatedAnnualSavingsHigh,
+  });
+
   frostMap.renderRiskGrid(cells);
   frostMap.renderPlacements(placements);
 
@@ -647,7 +837,28 @@ analyzeBtn.addEventListener("click", async () => {
     `${savings.acresProtected} / ${savings.acresAnalyzed}`;
   document.querySelector("#stat-savings")!.textContent =
     `$${savings.estimatedAnnualSavingsLow.toLocaleString()} – $${savings.estimatedAnnualSavingsHigh.toLocaleString()}`;
-  document.querySelector("#assumptions")!.innerHTML = savings.assumptions
+
+  document.querySelector("#stat-installed-cost")!.textContent =
+    `$${machineCost.totalInstalledCost.toLocaleString()}`;
+  document.querySelector("#stat-fuel-cost")!.textContent =
+    `$${machineCost.annualFuelCost.toLocaleString()}`;
+  document.querySelector("#stat-net-savings")!.textContent =
+    `$${machineCost.netAnnualSavingsLow.toLocaleString()} – $${machineCost.netAnnualSavingsHigh.toLocaleString()}`;
+  document.querySelector("#stat-payback")!.textContent =
+    placements.length === 0
+      ? "No machines recommended"
+      : machineCost.paybackYearsLow == null
+      ? "Fuel cost exceeds estimated savings"
+      : machineCost.paybackYearsHigh == null
+        ? `${machineCost.paybackYearsLow}+ yr (worst case doesn't break even)`
+        : machineCost.paybackYearsLow === machineCost.paybackYearsHigh
+          ? `${machineCost.paybackYearsHigh} yr`
+          : `${machineCost.paybackYearsLow} – ${machineCost.paybackYearsHigh} yr`;
+
+  document.querySelector("#assumptions")!.innerHTML = [
+    ...savings.assumptions,
+    ...machineCost.assumptions,
+  ]
     .map((a) => `<li>${a}</li>`)
     .join("");
 });
