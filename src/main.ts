@@ -3,6 +3,7 @@ import { initFrostMap, type Boundary } from "./components/map";
 import { buildPropertyGrid, scoreCell } from "./lib/grid";
 import { generateMockSamplesForCell } from "./lib/mockData";
 import { fetchLiveRiskCells, fetchCreditsUsage, FortyGuardConfigError } from "./lib/fortyguard";
+import * as connectionLog from "./lib/connectionLog";
 import { planPlacements } from "./lib/placement";
 import { estimateSavings } from "./lib/savings";
 import {
@@ -28,7 +29,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </header>
 
       <section class="panel-section" id="credits-section">
-        <h2>FortyGuard API credits</h2>
+        <h2 class="credits-heading">
+          FortyGuard API credits
+          <button
+            type="button"
+            id="connection-badge"
+            class="connection-badge"
+            aria-haspopup="dialog"
+            title="View the FortyGuard connection log"
+          >
+            <span class="connection-dot" id="connection-dot"></span>
+            <span id="connection-badge-label">Unknown</span>
+          </button>
+        </h2>
         <div class="credits-bar"><div class="credits-bar-fill" id="credits-bar-fill"></div></div>
         <p class="credits-line" id="credits-line">Checking usage…</p>
         <p class="hint" id="credits-detail"></p>
@@ -127,6 +140,17 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
     </aside>
     <main id="map"></main>
+  </div>
+
+  <div class="connection-modal" id="connection-modal" hidden>
+    <div class="connection-modal-panel" role="dialog" aria-modal="true" aria-label="FortyGuard connection log">
+      <header class="connection-modal-header">
+        <h2>FortyGuard connection</h2>
+        <button type="button" id="connection-modal-close" class="btn btn-ghost connection-modal-close" aria-label="Hide">Hide ✕</button>
+      </header>
+      <p class="hint" id="connection-modal-status"></p>
+      <div class="connection-log" id="connection-log-list"></div>
+    </div>
   </div>
 `;
 
@@ -242,20 +266,125 @@ async function refreshCreditsUsage() {
       ? ` · ${topActivity.name}: ${topActivity.credits.toLocaleString()} credits (${topActivity.count} call${topActivity.count === 1 ? "" : "s"})`
       : "";
     creditsDetail.textContent = `${usage.planType} plan · resets ${usage.creditsResetDate}${breakdown}`;
+    connectionLog.setStatus("connected");
   } catch (err) {
     creditsBarFill.style.width = "0%";
     if (err instanceof FortyGuardConfigError) {
       creditsLine.textContent = "Not configured";
       creditsDetail.textContent = "Set FORTYGUARD_API_KEY in .env.local to track credit usage.";
+      connectionLog.setStatus("not_configured");
     } else {
       creditsLine.textContent = "Usage unavailable";
       creditsDetail.textContent = "Could not reach FortyGuard — check the browser console.";
       console.warn("FortyGuard credits usage check failed:", err);
+      connectionLog.setStatus("fallback");
     }
   }
 }
 
 refreshCreditsUsage();
+
+/**
+ * Connection badge + inspector: makes the live-vs-simulated question
+ * answerable at a glance (green dot = live FortyGuard data, red = falling
+ * back to simulated data, gray = not configured / not checked yet) and,
+ * on click, shows the exact request/response traffic behind that verdict
+ * without needing devtools. Backed by src/lib/connectionLog.ts, which
+ * every fetchAndLog() call in fortyguard.ts writes into.
+ */
+const connectionBadge = document.querySelector<HTMLButtonElement>("#connection-badge")!;
+const connectionDot = document.querySelector<HTMLElement>("#connection-dot")!;
+const connectionBadgeLabel = document.querySelector<HTMLElement>("#connection-badge-label")!;
+const connectionModal = document.querySelector<HTMLElement>("#connection-modal")!;
+const connectionModalClose = document.querySelector<HTMLButtonElement>("#connection-modal-close")!;
+const connectionModalStatus = document.querySelector<HTMLElement>("#connection-modal-status")!;
+const connectionLogList = document.querySelector<HTMLElement>("#connection-log-list")!;
+
+const CONNECTION_STATUS_LABELS: Record<connectionLog.ConnectionStatus, string> = {
+  unknown: "Not checked yet",
+  connected: "Connected",
+  fallback: "Simulated data",
+  not_configured: "Not configured",
+};
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)
+  );
+}
+
+function formatLogValue(value: unknown): string {
+  if (value === undefined) return "(none)";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function renderConnectionBadge() {
+  const status = connectionLog.getStatus();
+  connectionDot.className = `connection-dot connection-dot--${status}`;
+  connectionBadgeLabel.textContent = CONNECTION_STATUS_LABELS[status];
+}
+
+function renderConnectionLog() {
+  const entries = connectionLog.getEntries();
+  connectionModalStatus.textContent =
+    entries.length === 0
+      ? "No FortyGuard requests yet — check credits or analyze a property to see live traffic here."
+      : `${entries.length} request${entries.length === 1 ? "" : "s"} this session, most recent first.`;
+
+  connectionLogList.innerHTML = entries
+    .map((entry) => {
+      const time = new Date(entry.timestamp).toLocaleTimeString();
+      const meta = [
+        entry.method,
+        entry.statusCode != null ? String(entry.statusCode) : entry.status,
+        entry.durationMs != null ? `${entry.durationMs}ms` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      return `
+        <details class="connection-entry connection-entry--${entry.status}">
+          <summary>
+            <span class="connection-entry-dot"></span>
+            <span class="connection-entry-label">${escapeHtml(entry.label)}</span>
+            <span class="connection-entry-meta">${escapeHtml(time)} · ${escapeHtml(meta)}</span>
+          </summary>
+          <div class="connection-entry-body">
+            <div class="connection-entry-row"><strong>Endpoint</strong><code>${escapeHtml(entry.method)} ${escapeHtml(entry.url)}</code></div>
+            ${entry.errorMessage ? `<div class="connection-entry-row"><strong>Error</strong><code>${escapeHtml(entry.errorMessage)}</code></div>` : ""}
+            <div class="connection-entry-row"><strong>Request body</strong><pre>${escapeHtml(formatLogValue(entry.requestBody))}</pre></div>
+            <div class="connection-entry-row"><strong>Response body</strong><pre>${escapeHtml(formatLogValue(entry.responseBody))}</pre></div>
+          </div>
+        </details>
+      `;
+    })
+    .join("");
+}
+
+connectionLog.subscribe(() => {
+  renderConnectionBadge();
+  renderConnectionLog();
+});
+renderConnectionBadge();
+renderConnectionLog();
+
+function openConnectionModal() {
+  connectionModal.hidden = false;
+}
+function closeConnectionModal() {
+  connectionModal.hidden = true;
+}
+connectionBadge.addEventListener("click", openConnectionModal);
+connectionModalClose.addEventListener("click", closeConnectionModal);
+connectionModal.addEventListener("click", (ev) => {
+  if (ev.target === connectionModal) closeConnectionModal();
+});
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !connectionModal.hidden) closeConnectionModal();
+});
 
 const resultsSection = document.querySelector<HTMLElement>("#results")!;
 const clearResultsBtn = document.querySelector<HTMLButtonElement>("#clear-results")!;
@@ -337,6 +466,7 @@ analyzeBtn.addEventListener("click", async () => {
       endDate: historyEnd,
     });
     sourceNote = `Live FortyGuard data, ${historyStart} to ${historyEnd}.`;
+    connectionLog.setStatus("connected");
     // That request just spent credits — refresh the meter (fire-and-forget,
     // shouldn't block or fail the analysis flow if it errors).
     void refreshCreditsUsage();
@@ -344,8 +474,11 @@ analyzeBtn.addEventListener("click", async () => {
     // 2. No key configured yet (expected until .env.local is set up), or
     //    the live call failed for some other reason — fall back to the
     //    simulated cold-air-drainage model so the demo never breaks.
-    if (!(err instanceof FortyGuardConfigError)) {
+    if (err instanceof FortyGuardConfigError) {
+      connectionLog.setStatus("not_configured");
+    } else {
       console.warn("FortyGuard live fetch failed, falling back to simulated data:", err);
+      connectionLog.setStatus("fallback");
     }
     const cellPolygons = buildPropertyGrid(boundary);
     cells = cellPolygons.map((poly, i) => {
@@ -355,7 +488,7 @@ analyzeBtn.addEventListener("click", async () => {
     sourceNote =
       err instanceof FortyGuardConfigError
         ? "Simulated data — no FortyGuard API key configured yet (see .env.example)."
-        : "Simulated data — the live FortyGuard request failed; check the browser console.";
+        : "Simulated data — the live FortyGuard request failed; check the browser console (or the connection badge above) for details.";
   }
 
   analyzeBtn.disabled = false;

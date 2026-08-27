@@ -1,6 +1,7 @@
 import * as turf from "@turf/turf";
 import type { Feature, MultiPolygon, Polygon } from "geojson";
 import type { CreditsUsage, RiskCell } from "./types";
+import * as connectionLog from "./connectionLog";
 
 /**
  * Real FortyGuard Temperature API client — confirmed against
@@ -37,6 +38,15 @@ import type { CreditsUsage, RiskCell } from "./types";
  * request instead returns `{ tile_id, average_temperature, min_temperature,
  * max_temperature }` per tile — not used here, but useful if a future feature
  * wants per-tile worst-temp alongside exceedance.
+ *
+ * Every request below goes through `fetchAndLog`, which records it in
+ * src/lib/connectionLog.ts — that's what powers the "FortyGuard connection"
+ * badge and inspector panel in main.ts. It replaces the older
+ * fetch()-then-readProxyResponse() pattern (same single-read-of-the-body
+ * discipline, see the comment on readProxyResponse's removal below — a
+ * Response body can only be consumed once, and reading it twice under an
+ * error path used to throw "body stream already read" and mask the real
+ * error).
  */
 
 const POLL_INTERVAL_MS = 4000;
@@ -45,19 +55,48 @@ const MAX_POLL_ATTEMPTS = 90; // ~6 minutes — Heatmap generation isn't documen
 /** Thrown when the server-side proxy has no FORTYGUARD_API_KEY configured — callers should fall back to mock data, not surface this as a hard error. */
 export class FortyGuardConfigError extends Error {}
 
+function tryParseJsonBody(body: BodyInit | null | undefined): unknown {
+  if (typeof body !== "string") return undefined;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Read a /api/fortyguard/* proxy response body exactly once, then decide
- * what to do with it. A Response body can only be consumed a single time —
- * calling res.json() and then, in a later branch, res.text() on the same
- * Response throws "body stream already read" and masks whatever the real
- * error was. (Found live: Vercel's deployment-protection interstitial
- * returns 200 with an HTML page instead of our proxy's JSON when SSO
- * protection is on for a domain — res.json() failed to parse it, fell
- * through to the res.text() branch, and threw the body-already-read error
- * instead of a useful one.)
+ * fetch() + single-read-the-body-once response handling, instrumented into
+ * connectionLog so every call (success, HTTP error, or network failure)
+ * shows up in the inspector panel with its request/response bodies.
+ *
+ * `label` is the human-friendly name shown in the inspector (e.g. "Submit
+ * heatmap request"); `method`/`url` are the technical detail shown under it.
  */
-async function readProxyResponse(res: Response): Promise<any> {
+async function fetchAndLog(
+  label: string,
+  method: string,
+  url: string,
+  init?: RequestInit
+): Promise<any> {
+  const logId = connectionLog.startEntry(label, method, url, tryParseJsonBody(init?.body));
+  const t0 = Date.now();
+
+  let res: Response;
+  try {
+    res = await fetch(url, init);
+  } catch (networkErr) {
+    const durationMs = Date.now() - t0;
+    const msg = networkErr instanceof Error ? networkErr.message : String(networkErr);
+    connectionLog.finishEntry(logId, {
+      status: "error",
+      durationMs,
+      errorMessage: `Network error: ${msg}`,
+    });
+    throw new Error(`FortyGuard network error: ${msg}`);
+  }
+
   const raw = await res.text();
+  const durationMs = Date.now() - t0;
   let parsed: any = undefined;
   try {
     parsed = JSON.parse(raw);
@@ -65,22 +104,68 @@ async function readProxyResponse(res: Response): Promise<any> {
     // Not JSON — most likely an HTML error/interstitial page from the
     // hosting platform rather than from our own edge function.
   }
+
   if (res.status === 500 && parsed?.configError) {
-    throw new FortyGuardConfigError(
-      parsed.error ?? "FortyGuard API key not configured"
-    );
+    const message = parsed.error ?? "FortyGuard API key not configured";
+    connectionLog.finishEntry(logId, {
+      status: "error",
+      statusCode: res.status,
+      durationMs,
+      responseBody: parsed,
+      errorMessage: message,
+    });
+    throw new FortyGuardConfigError(message);
   }
   if (!res.ok) {
-    throw new Error(
-      `FortyGuard request failed (${res.status}): ${raw.slice(0, 500)}`
-    );
+    const message = `FortyGuard request failed (${res.status}): ${raw.slice(0, 500)}`;
+    connectionLog.finishEntry(logId, {
+      status: "error",
+      statusCode: res.status,
+      durationMs,
+      responseBody: parsed ?? raw.slice(0, 500),
+      errorMessage: message,
+    });
+    throw new Error(message);
   }
   if (parsed === undefined) {
-    throw new Error(
-      `FortyGuard proxy returned a non-JSON response (status ${res.status}): ${raw.slice(0, 500)}`
-    );
+    const message = `FortyGuard proxy returned a non-JSON response (status ${res.status}): ${raw.slice(0, 500)}`;
+    connectionLog.finishEntry(logId, {
+      status: "error",
+      statusCode: res.status,
+      durationMs,
+      responseBody: raw.slice(0, 500),
+      errorMessage: message,
+    });
+    throw new Error(message);
   }
+
+  connectionLog.finishEntry(logId, {
+    status: "success",
+    statusCode: res.status,
+    durationMs,
+    responseBody: parsed,
+  });
   return parsed;
+}
+
+/** True for errors worth one silent retry — a dropped connection or a proxy/upstream hiccup, not a config or validation problem. */
+function isRetryable(err: unknown): boolean {
+  if (err instanceof FortyGuardConfigError) return false;
+  if (!(err instanceof Error)) return true;
+  return (
+    err.message.startsWith("FortyGuard network error") ||
+    /\(50[0-9]\)/.test(err.message) // 500-599 from the proxy or upstream
+  );
+}
+
+async function withOneRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (!isRetryable(err)) throw err;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return fn();
+  }
 }
 
 export interface LiveRiskQuery {
@@ -110,24 +195,24 @@ async function submitHeatmap(
   polygon: Feature<Polygon>,
   query: LiveRiskQuery
 ): Promise<string> {
-  const res = await fetch("/api/fortyguard/heatmap", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      polygon_aoi: turf.featureCollection([polygon]),
-      date_time: {
-        start_date: query.startDate,
-        end_date: query.endDate,
-        filter_type: 4,
-      },
-      granularity: query.granularityM ?? 60,
-      analytic_type: "exceedance",
-      threshold: fahrenheitToCelsius(query.thresholdF),
-      direction: "below",
-    }),
-  });
-
-  const data = await readProxyResponse(res);
+  const data = await withOneRetry(() =>
+    fetchAndLog("Submit heatmap request", "POST", "/api/fortyguard/heatmap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        polygon_aoi: turf.featureCollection([polygon]),
+        date_time: {
+          start_date: query.startDate,
+          end_date: query.endDate,
+          filter_type: 4,
+        },
+        granularity: query.granularityM ?? 60,
+        analytic_type: "exceedance",
+        threshold: fahrenheitToCelsius(query.thresholdF),
+        direction: "below",
+      }),
+    })
+  );
   const activityId = data?.data?.activity_id;
   if (!activityId) {
     throw new Error("FortyGuard submission response had no activity_id");
@@ -137,10 +222,11 @@ async function submitHeatmap(
 
 async function pollHeatmap(activityId: string): Promise<any> {
   for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
-    const res = await fetch(
+    const data = await fetchAndLog(
+      "Poll heatmap status",
+      "GET",
       `/api/fortyguard/status?activity_id=${encodeURIComponent(activityId)}`
     );
-    const data = await readProxyResponse(res);
     const status = String(data?.data?.status ?? "").toLowerCase();
 
     if (status === "completed" || status === "succeeded") {
@@ -193,6 +279,15 @@ function tilesToRiskCells(mapData: any, totalHours: number): RiskCell[] {
  * date range. Throws FortyGuardConfigError if no API key is configured
  * server-side — callers should catch that specifically and fall back to
  * src/lib/mockData.ts, exactly as main.ts does.
+ *
+ * A boundary with more than one disjoint block submits one request per
+ * polygon, in parallel, via Promise.allSettled rather than Promise.all: one
+ * slow or momentarily-flaky block (a single dropped connection, a rate
+ * limit hit on just that call) no longer takes the *entire* property back
+ * to simulated data — as long as at least one polygon's request succeeds,
+ * its cells are used and the rest are reported as partial coverage. Every
+ * block failing is still treated as a hard failure so the caller falls
+ * back to mock data, same as before.
  */
 export async function fetchLiveRiskCells(
   query: LiveRiskQuery
@@ -204,15 +299,45 @@ export async function fetchLiveRiskCells(
 
   const totalHours = hoursBetween(query.startDate, query.endDate);
 
-  const perPolygon = await Promise.all(
+  const settled = await Promise.allSettled(
     polygons.map(async (polygon) => {
-      const activityId = await submitHeatmap(polygon, query);
+      const activityId = await withOneRetry(() => submitHeatmap(polygon, query));
       const result = await pollHeatmap(activityId);
       return tilesToRiskCells(result?.map_data, totalHours);
     })
   );
 
-  return perPolygon.flat();
+  const fulfilled = settled.filter(
+    (r): r is PromiseFulfilledResult<RiskCell[]> => r.status === "fulfilled"
+  );
+  const rejected = settled.filter(
+    (r): r is PromiseRejectedResult => r.status === "rejected"
+  );
+
+  if (fulfilled.length === 0) {
+    // Every block failed — surface the first block's error (a
+    // FortyGuardConfigError propagates as-is so the caller's mock-data
+    // fallback path stays intact; anything else becomes a normal Error).
+    const first = rejected[0]?.reason;
+    if (first instanceof FortyGuardConfigError) throw first;
+    throw new Error(
+      rejected.length > 1
+        ? `All ${rejected.length} property blocks failed to fetch live data — see the connection log for details.`
+        : String(first instanceof Error ? first.message : first)
+    );
+  }
+
+  if (rejected.length > 0) {
+    // Partial success: log it so it's visible in the inspector, but don't
+    // fail the whole analysis over it — the caller still gets real data
+    // for the blocks that worked.
+    console.warn(
+      `FortyGuard: ${rejected.length}/${polygons.length} property block(s) failed to fetch live data; continuing with the ${fulfilled.length} that succeeded.`,
+      rejected.map((r) => r.reason)
+    );
+  }
+
+  return fulfilled.flatMap((r) => r.value);
 }
 
 
@@ -225,9 +350,7 @@ export async function fetchLiveRiskCells(
  * specifically and show a "not configured" state rather than an error.
  */
 export async function fetchCreditsUsage(): Promise<CreditsUsage> {
-  const res = await fetch("/api/fortyguard/usage");
-
-  const data = await readProxyResponse(res);
+  const data = await fetchAndLog("Check API credit usage", "GET", "/api/fortyguard/usage");
   const plan = data?.plan_details ?? {};
   const keyDetails = data?.api_key_details ?? {};
   const credits = data?.credit_summary ?? {};
