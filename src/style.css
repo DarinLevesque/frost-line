@@ -351,3 +351,16 @@ body { background: var(--paper); color: var(--ink); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+.wind-estimate {
+  margin-top: 6px;
+}
+.wind-estimate .btn {
+  width: 100%;
+}
+.wind-estimate .hint {
+  margin: 6px 0 0;
+}
+.wind-estimate .hint a {
+  color: var(--cold);
+}

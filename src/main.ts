@@ -4,6 +4,7 @@ import { buildPropertyGrid, scoreCell } from "./lib/grid";
 import { generateMockSamplesForCell } from "./lib/mockData";
 import { fetchLiveRiskCells, fetchCreditsUsage, FortyGuardConfigError } from "./lib/fortyguard";
 import * as connectionLog from "./lib/connectionLog";
+import * as turf from "@turf/turf";
 import { planPlacements } from "./lib/placement";
 import { estimateSavings } from "./lib/savings";
 import {
@@ -98,6 +99,15 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="compass-readout" id="compass-readout">150° · SSE</div>
           </div>
           <input id="wind-bearing" type="hidden" value="150" />
+          <div class="wind-estimate">
+            <button type="button" id="estimate-wind" class="btn btn-ghost">Estimate from historical wind data</button>
+            <p class="hint" id="wind-estimate-note">
+              Pulls free historical wind data for this location from
+              <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+              and averages the direction over cold spring/autumn hours (frost season, Northern Hemisphere).
+              No boundary needed — falls back to the site location shown on the map.
+            </p>
+          </div>
         </label>
         <label class="field">
           Crop value ($/acre)
@@ -157,7 +167,124 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
 const frostMap = initFrostMap("map");
 let currentBoundary: Boundary | null = null;
 
-initWindCompass();
+const windCompass = initWindCompass();
+
+/**
+ * "Estimate from historical wind data": pulls free, key-less historical
+ * hourly weather (Open-Meteo's archive — no signup, CORS-enabled for
+ * direct browser fetches) for the property's location, filters to cold
+ * hours in the frost-susceptible spring/autumn window (Mar-May, Sep-Nov,
+ * Northern Hemisphere), and takes the circular mean of wind direction
+ * over just those hours as a "prevailing cold-night wind" estimate. That
+ * feeds straight into the same compass the manual control drives, so
+ * nothing downstream (planPlacements) needs to know where the bearing
+ * came from.
+ *
+ * Open-Meteo's wind_direction_10m is meteorological convention (the
+ * direction the wind is blowing FROM); the compass here is "blowing
+ * TOWARD" (matches placement.ts), so the estimate gets rotated 180°
+ * before it's applied.
+ *
+ * If the fetch fails, or too few cold hours turn up nearby, this leaves
+ * the compass alone and instead points at the Iowa Environmental
+ * Mesonet's wind rose tool — a well-established free station-based
+ * alternative — per the fallback the user asked for.
+ */
+const FROST_SEASON_MONTHS = new Set([3, 4, 5, 9, 10, 11]); // spring + autumn, Northern Hemisphere
+const WIND_ROSE_FALLBACK_URL = "https://mesonet.agron.iastate.edu/sites/windrose.phtml";
+
+function circularMeanBearingDeg(bearingsDeg: number[]): number {
+  let sinSum = 0;
+  let cosSum = 0;
+  for (const deg of bearingsDeg) {
+    const rad = (deg * Math.PI) / 180;
+    sinSum += Math.sin(rad);
+    cosSum += Math.cos(rad);
+  }
+  const meanRad = Math.atan2(sinSum, cosSum);
+  return ((meanRad * 180) / Math.PI + 360) % 360;
+}
+
+function isoDateUTC(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+const estimateWindBtn = document.querySelector<HTMLButtonElement>("#estimate-wind")!;
+const windEstimateNote = document.querySelector<HTMLElement>("#wind-estimate-note")!;
+
+estimateWindBtn.addEventListener("click", async () => {
+  const boundary = currentBoundary ?? frostMap.drawnBoundary();
+  const [lng, lat] = boundary
+    ? (turf.centroid(boundary).geometry.coordinates as [number, number])
+    : [DEMO_SITE.center.lng, DEMO_SITE.center.lat];
+
+  const growthStage = (document.querySelector<HTMLSelectElement>(
+    "#growth-stage"
+  )!.value) as GrowthStage;
+  const thresholdF = LT50_THRESHOLDS_F[growthStage] ?? 28;
+
+  const originalLabel = estimateWindBtn.textContent;
+  estimateWindBtn.disabled = true;
+  estimateWindBtn.textContent = "Estimating…";
+  windEstimateNote.textContent = "Pulling historical wind data from Open-Meteo…";
+
+  try {
+    // Archive data lags a few days behind real time; look back 2 full
+    // years from a week ago so both this year's and last year's spring
+    // and autumn are covered even mid-season.
+    const end = new Date();
+    end.setUTCDate(end.getUTCDate() - 7);
+    const start = new Date(end);
+    start.setUTCFullYear(start.getUTCFullYear() - 2);
+
+    const url =
+      `https://archive-api.open-meteo.com/v1/archive` +
+      `?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}` +
+      `&start_date=${isoDateUTC(start)}&end_date=${isoDateUTC(end)}` +
+      `&hourly=wind_direction_10m,temperature_2m&temperature_unit=fahrenheit&timezone=auto`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`Open-Meteo request failed (${res.status})`);
+    }
+    const data = await res.json();
+    const times: string[] = data?.hourly?.time ?? [];
+    const dirs: (number | null)[] = data?.hourly?.wind_direction_10m ?? [];
+    const temps: (number | null)[] = data?.hourly?.temperature_2m ?? [];
+
+    const coldSeasonFromDirs: number[] = [];
+    for (let i = 0; i < times.length; i++) {
+      const month = Number(times[i].slice(5, 7));
+      if (!FROST_SEASON_MONTHS.has(month)) continue;
+      const temp = temps[i];
+      const dir = dirs[i];
+      if (temp == null || dir == null || temp > thresholdF) continue;
+      coldSeasonFromDirs.push(dir);
+    }
+
+    if (coldSeasonFromDirs.length < 20) {
+      windEstimateNote.innerHTML =
+        `Only found ${coldSeasonFromDirs.length} cold spring/autumn hour(s) near this location in the last 2 years — too few to trust. ` +
+        `Try the <a href="${WIND_ROSE_FALLBACK_URL}" target="_blank" rel="noopener">Iowa Environmental Mesonet wind rose tool</a> for a station-based estimate instead.`;
+      return;
+    }
+
+    const fromBearing = circularMeanBearingDeg(coldSeasonFromDirs);
+    const towardBearing = (fromBearing + 180) % 360;
+    windCompass.setBearing(towardBearing);
+
+    windEstimateNote.textContent =
+      `Estimated from ${coldSeasonFromDirs.length} cold hours (≤ ${thresholdF}°F, spring + autumn, last 2 years) near ` +
+      `${lat.toFixed(3)}, ${lng.toFixed(3)} — Open-Meteo historical weather archive. Adjust the compass by hand if this looks off.`;
+  } catch (err) {
+    console.warn("Prevailing wind estimate failed:", err);
+    windEstimateNote.innerHTML =
+      `Could not reach Open-Meteo — check the browser console, or look up prevailing winds yourself at the ` +
+      `<a href="${WIND_ROSE_FALLBACK_URL}" target="_blank" rel="noopener">Iowa Environmental Mesonet wind rose tool</a>.`;
+  } finally {
+    estimateWindBtn.disabled = false;
+    estimateWindBtn.textContent = originalLabel;
+  }
+});
 
 /**
  * Click/drag/keyboard-driven compass for "prevailing cold-night wind,
@@ -167,7 +294,7 @@ initWindCompass();
  * into the existing hidden #wind-bearing input, so nothing downstream
  * (the analyze handler, planPlacements) needs to know this exists.
  */
-function initWindCompass() {
+function initWindCompass(): { setBearing: (deg: number) => void } {
   const COMPASS_POINTS = [
     "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
     "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
@@ -243,6 +370,8 @@ function initWindCompass() {
   });
 
   setBearing(Number(hiddenInput.value) || 150);
+
+  return { setBearing };
 }
 
 const creditsBarFill = document.querySelector<HTMLElement>("#credits-bar-fill")!;
