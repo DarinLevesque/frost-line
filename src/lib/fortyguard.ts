@@ -45,6 +45,44 @@ const MAX_POLL_ATTEMPTS = 90; // ~6 minutes — Heatmap generation isn't documen
 /** Thrown when the server-side proxy has no FORTYGUARD_API_KEY configured — callers should fall back to mock data, not surface this as a hard error. */
 export class FortyGuardConfigError extends Error {}
 
+/**
+ * Read a /api/fortyguard/* proxy response body exactly once, then decide
+ * what to do with it. A Response body can only be consumed a single time —
+ * calling res.json() and then, in a later branch, res.text() on the same
+ * Response throws "body stream already read" and masks whatever the real
+ * error was. (Found live: Vercel's deployment-protection interstitial
+ * returns 200 with an HTML page instead of our proxy's JSON when SSO
+ * protection is on for a domain — res.json() failed to parse it, fell
+ * through to the res.text() branch, and threw the body-already-read error
+ * instead of a useful one.)
+ */
+async function readProxyResponse(res: Response): Promise<any> {
+  const raw = await res.text();
+  let parsed: any = undefined;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Not JSON — most likely an HTML error/interstitial page from the
+    // hosting platform rather than from our own edge function.
+  }
+  if (res.status === 500 && parsed?.configError) {
+    throw new FortyGuardConfigError(
+      parsed.error ?? "FortyGuard API key not configured"
+    );
+  }
+  if (!res.ok) {
+    throw new Error(
+      `FortyGuard request failed (${res.status}): ${raw.slice(0, 500)}`
+    );
+  }
+  if (parsed === undefined) {
+    throw new Error(
+      `FortyGuard proxy returned a non-JSON response (status ${res.status}): ${raw.slice(0, 500)}`
+    );
+  }
+  return parsed;
+}
+
 export interface LiveRiskQuery {
   /** Property boundary — a MultiPolygon (combined drawn blocks) submits one request per component polygon, in parallel. */
   boundary: Feature<Polygon | MultiPolygon>;
@@ -89,21 +127,7 @@ async function submitHeatmap(
     }),
   });
 
-  if (res.status === 500) {
-    const body = await res.json().catch(() => ({}) as any);
-    if (body?.configError) {
-      throw new FortyGuardConfigError(
-        body.error ?? "FortyGuard API key not configured"
-      );
-    }
-  }
-  if (!res.ok) {
-    throw new Error(
-      `FortyGuard heatmap submission failed (${res.status}): ${await res.text()}`
-    );
-  }
-
-  const data = await res.json();
+  const data = await readProxyResponse(res);
   const activityId = data?.data?.activity_id;
   if (!activityId) {
     throw new Error("FortyGuard submission response had no activity_id");
@@ -116,21 +140,7 @@ async function pollHeatmap(activityId: string): Promise<any> {
     const res = await fetch(
       `/api/fortyguard/status?activity_id=${encodeURIComponent(activityId)}`
     );
-    if (res.status === 500) {
-      const body = await res.json().catch(() => ({}) as any);
-      if (body?.configError) {
-        throw new FortyGuardConfigError(
-          body.error ?? "FortyGuard API key not configured"
-        );
-      }
-    }
-    if (!res.ok) {
-      throw new Error(
-        `FortyGuard status check failed (${res.status}): ${await res.text()}`
-      );
-    }
-
-    const data = await res.json();
+    const data = await readProxyResponse(res);
     const status = String(data?.data?.status ?? "").toLowerCase();
 
     if (status === "completed" || status === "succeeded") {
@@ -217,21 +227,7 @@ export async function fetchLiveRiskCells(
 export async function fetchCreditsUsage(): Promise<CreditsUsage> {
   const res = await fetch("/api/fortyguard/usage");
 
-  if (res.status === 500) {
-    const body = await res.json().catch(() => ({}) as any);
-    if (body?.configError) {
-      throw new FortyGuardConfigError(
-        body.error ?? "FortyGuard API key not configured"
-      );
-    }
-  }
-  if (!res.ok) {
-    throw new Error(
-      `FortyGuard usage check failed (${res.status}): ${await res.text()}`
-    );
-  }
-
-  const data = await res.json();
+  const data = await readProxyResponse(res);
   const plan = data?.plan_details ?? {};
   const keyDetails = data?.api_key_details ?? {};
   const credits = data?.credit_summary ?? {};
