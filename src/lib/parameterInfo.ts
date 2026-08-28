@@ -53,13 +53,22 @@ export const PARAMETER_INFO: Record<string, ParameterInfo> = {
       "Not published in the dissertation — its field trial is a physical/engineering study of a small number of specific frost events, not a multi-year climatology. This figure is supplied by you.",
   },
   "history-window": {
-    title: "Historical window (FortyGuard data)",
+    title: "Historical window (FortyGuard climatology)",
     whatItDoes:
-      "The date range FortyGuard's live API is queried over when scoring frost risk, cell by cell, across the property.",
+      "Instead of scoring risk from one arbitrary date window, this app fetches FortyGuard's live exceedance data for the Mar 1–May 31 window of each of the last few spring seasons and aggregates every grid cell's exceedance hours across all of them. riskScore becomes “fraction of all spring hours, across those years, that this cell spent below threshold” — a real historical frequency, not a single snapshot. Only spring is fetched: every LT50 growth stage this app tracks (dormant through four-leaf) is a spring bud-development stage, so autumn data wouldn't change the score.",
     whereToGetIt:
-      "Confirmed directly against FortyGuard's own API documentation: historical data is available from 2019-01-01 through about 12 hours ahead of the current time. A single request is capped at roughly one month of range, so this defaults to one representative recent frost-season month — pick any other ≤1-month window back to 2019 if you want a different season.",
+      "Confirmed directly against FortyGuard's own API documentation: historical data is available from 2019-01-01 through about 12 hours ahead of the current time, and a single request is capped at roughly one month of range — which is why this needs 3 requests (Mar/Apr/May) per spring season rather than one.",
     dissertationConnection:
       "Not dissertation-sourced — this is FortyGuard's own data coverage and is unrelated to the TU Delft study.",
+  },
+  "wind-turbine-vs-machine": {
+    title: "Why not a power-generating wind turbine?",
+    whatItDoes:
+      "This app only ever recommends propane-fired frost-protection wind machines, never power-generating wind turbines — on purpose. Radiation frost forms specifically on calm, clear nights, when there's too little ambient wind to spin a turbine past its cut-in speed (roughly 9 mph even for small turbines) in the first place. A frost machine actively burns fuel to force warm inversion-layer air down onto the canopy; a turbine passively extracts energy FROM wind that, on a frost night, mostly isn't there. A turbine on the same property can still be a good investment for its own sake — just not as frost protection, so this app doesn't model it as a substitute.",
+    whereToGetIt:
+      "FAO's frost-protection fundamentals and UC Davis's Principles of Frost Protection both describe the calm-wind/temperature-inversion mechanics behind this; small-turbine cut-in speeds are documented by turbine manufacturers and reference sources like Wikipedia's Small wind turbine article.",
+    dissertationConnection:
+      "The dissertation cites wind-turbine wake research only as a modeling technique (borrowing wake math to simulate the frost fan's own airflow) — it never proposes power-generating turbines as a frost-mitigation method themselves.",
   },
   "machine-profile": {
     title: "Wind machine model",

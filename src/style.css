@@ -455,20 +455,7 @@ body { background: var(--paper); color: var(--ink); }
   margin-bottom: 2px;
 }
 
-.date-range-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.date-range-row input {
-  flex: 1 1 0;
-  min-width: 0;
-}
-.date-range-sep {
-  font-size: 0.78rem;
-  color: var(--muted);
-  flex: none;
-}
+
 
 .badge-soon {
   display: inline-block;

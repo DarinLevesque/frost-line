@@ -3,11 +3,11 @@ import { initFrostMap, type Boundary } from "./components/map";
 import { buildPropertyGrid, scoreCell } from "./lib/grid";
 import { generateMockSamplesForCell } from "./lib/mockData";
 import {
-  fetchLiveRiskCells,
+  fetchClimatologyRiskCells,
   fetchCreditsUsage,
   FortyGuardConfigError,
-  FortyGuardRangeError,
-  MAX_RANGE_DAYS,
+  recentSpringSeasonYears,
+  CLIMATOLOGY_SEASON_COUNT,
 } from "./lib/fortyguard";
 import * as connectionLog from "./lib/connectionLog";
 import * as turf from "@turf/turf";
@@ -26,23 +26,6 @@ import {
   COMING_SOON_WIND_MACHINE_PROFILES,
   estimateMachineCost,
 } from "./lib/machineCost";
-
-/** Default historical window: last spring's frost season, a plausible demo range that's always in the past. Kept to <= 1 month per FortyGuard's range-of-days cap. */
-function defaultFrostSeasonRange(): { start: string; end: string } {
-  const now = new Date();
-  const year = now.getUTCMonth() < 6 ? now.getUTCFullYear() - 1 : now.getUTCFullYear();
-  return { start: `${year}-04-01`, end: `${year}-04-30` };
-}
-
-/**
- * Bounds for the date pickers: FortyGuard's confirmed data coverage is
- * 2019-01-01 through ~12h ahead of now (see FORTYGUARD_NOTES). The default
- * *prefilled* window above stays a single representative frost-season
- * month (a single request is capped at ~1 month), but the pickers'
- * min/max now unlock the entire range so any past season is reachable.
- */
-const HISTORY_MIN_DATE = FORTYGUARD_NOTES.historyStart;
-const HISTORY_MAX_DATE = new Date().toISOString().slice(0, 10);
 
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="layout">
@@ -154,20 +137,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
         </label>
         <label class="field">
           <span class="field-label-row">
-            Historical window (FortyGuard data, ≤ 1 month per request)
+            Historical window (FortyGuard climatology)
             <button type="button" class="info-icon" data-info-key="history-window" aria-label="What is this?">i</button>
           </span>
-          <div class="date-range-row">
-            <input id="history-start" type="date" min="${HISTORY_MIN_DATE}" max="${HISTORY_MAX_DATE}" value="${defaultFrostSeasonRange().start}" />
-            <span class="date-range-sep">to</span>
-            <input id="history-end" type="date" min="${HISTORY_MIN_DATE}" max="${HISTORY_MAX_DATE}" value="${defaultFrostSeasonRange().end}" />
-          </div>
-          <p class="hint">FortyGuard's confirmed data range is ${HISTORY_MIN_DATE} through today — defaults to last spring's frost month; pick any other ≤ 1 month window within that full range.</p>
+          <p class="hint" id="climatology-window-note">Loading…</p>
         </label>
       </section>
 
       <section class="panel-section">
         <h2>3. Wind machine</h2>
+        <p class="hint field-label-row">
+          Not the same as a power-generating turbine
+          <button type="button" class="info-icon" data-info-key="wind-turbine-vs-machine" aria-label="What is this?">i</button>
+        </p>
         <label class="field">
           <span class="field-label-row">
             Machine profile
@@ -311,51 +293,19 @@ function isoDateUTC(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function addDaysISO(iso: string, days: number): string {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return isoDateUTC(d);
-}
-
 /**
- * Keep #history-start/#history-end from ever landing more than
- * MAX_RANGE_DAYS apart. The pickers' min/max were widened (Aug 27) to span
- * FortyGuard's full 2019-present history so any past frost season is
- * reachable, but nothing stopped picking a start and end years apart —
- * FortyGuard's Create Heatmap endpoint caps a single request at
- * MAX_RANGE_DAYS and returns a bare 500 (not a validation error) past that,
- * which read as a flaky API until the request body was inspected. This
- * dynamically narrows the *other* input's min/max whenever one changes, so
- * an invalid combination can't be selected — fetchLiveRiskCells still
- * validates too, as a backstop for anything that reaches it another way.
+ * The climatology's window is fixed (last CLIMATOLOGY_SEASON_COUNT spring
+ * seasons, Mar 1–May 31 each), not user-picked — see the Aug 28 writeup on
+ * why a free-form date range was a problem (a >31-day span silently 500s
+ * against FortyGuard). This just renders which years that resolves to, so
+ * the assumption stays visible instead of hidden — same "show the
+ * assumptions" spirit as the savings/cost boxes below.
  */
-function clampHistoryRange(changed: "start" | "end") {
-  const start = historyStartInput.value;
-  const end = historyEndInput.value;
-  if (!start || !end) return;
-
-  if (changed === "start") {
-    const latestEnd = addDaysISO(start, MAX_RANGE_DAYS);
-    historyEndInput.min = start;
-    historyEndInput.max = latestEnd < HISTORY_MAX_DATE ? latestEnd : HISTORY_MAX_DATE;
-    if (historyEndInput.value < historyEndInput.min || historyEndInput.value > historyEndInput.max) {
-      historyEndInput.value = historyEndInput.max;
-    }
-  } else {
-    const earliestStart = addDaysISO(end, -MAX_RANGE_DAYS);
-    historyStartInput.max = end;
-    historyStartInput.min = earliestStart > HISTORY_MIN_DATE ? earliestStart : HISTORY_MIN_DATE;
-    if (historyStartInput.value < historyStartInput.min || historyStartInput.value > historyStartInput.max) {
-      historyStartInput.value = historyStartInput.min;
-    }
-  }
-}
-
-const historyStartInput = document.querySelector<HTMLInputElement>("#history-start")!;
-const historyEndInput = document.querySelector<HTMLInputElement>("#history-end")!;
-historyStartInput.addEventListener("change", () => clampHistoryRange("start"));
-historyEndInput.addEventListener("change", () => clampHistoryRange("end"));
-clampHistoryRange("start"); // apply once on load so #history-end's bounds match the default start
+const climatologySeasonYears = recentSpringSeasonYears(CLIMATOLOGY_SEASON_COUNT);
+const climatologyRequestCount = CLIMATOLOGY_SEASON_COUNT * 3; // Mar + Apr + May per season, per property block
+document.querySelector<HTMLElement>("#climatology-window-note")!.textContent =
+  `Spring ${climatologySeasonYears.join(", ")} (Mar 1–May 31 each, ${CLIMATOLOGY_SEASON_COUNT} most recent seasons back to ${FORTYGUARD_NOTES.historyStart.slice(0, 4)}). ` +
+  `That's ${climatologyRequestCount} FortyGuard requests per property block on every Analyze — worth it for real historical frequency instead of one snapshot, but not something to click repeatedly without reason.`;
 
 const estimateWindBtn = document.querySelector<HTMLButtonElement>("#estimate-wind")!;
 const windEstimateNote = document.querySelector<HTMLElement>("#wind-estimate-note")!;
@@ -786,8 +736,6 @@ analyzeBtn.addEventListener("click", async () => {
   const frostNightsPerSeason = Number(
     document.querySelector<HTMLInputElement>("#frost-nights")!.value
   );
-  const historyStart = historyStartInput.value;
-  const historyEnd = historyEndInput.value;
   const thresholdF = LT50_THRESHOLDS_F[growthStage] ?? 28;
 
   // Start every analysis from a clean slate — re-running with new
@@ -803,15 +751,18 @@ analyzeBtn.addEventListener("click", async () => {
   let sourceNote: string;
   try {
     // 1. Try FortyGuard's real Create Heatmap endpoint (analytic_type
-    //    "exceedance", direction "below") — one request per polygon in the
-    //    boundary, polled to completion. See src/lib/fortyguard.ts.
-    cells = await fetchLiveRiskCells({
+    //    "exceedance", direction "below"), aggregated across the last
+    //    CLIMATOLOGY_SEASON_COUNT spring seasons rather than one date
+    //    window — see src/lib/fortyguard.ts's fetchClimatologyRiskCells.
+    const climatology = await fetchClimatologyRiskCells({
       boundary,
       thresholdF,
-      startDate: historyStart,
-      endDate: historyEnd,
+      onProgress: (completed, total) => {
+        analyzeBtn.textContent = `Analyzing… (${completed}/${total})`;
+      },
     });
-    sourceNote = `Live FortyGuard data, ${historyStart} to ${historyEnd}.`;
+    cells = climatology.cells;
+    sourceNote = `Live FortyGuard climatology — spring seasons ${climatology.seasonsUsed.join(", ")}.`;
     connectionLog.setStatus("connected");
     // That request just spent credits — refresh the meter (fire-and-forget,
     // shouldn't block or fail the analysis flow if it errors).
@@ -822,8 +773,6 @@ analyzeBtn.addEventListener("click", async () => {
     //    simulated cold-air-drainage model so the demo never breaks.
     if (err instanceof FortyGuardConfigError) {
       connectionLog.setStatus("not_configured");
-    } else if (err instanceof FortyGuardRangeError) {
-      connectionLog.setStatus("fallback");
     } else {
       console.warn("FortyGuard live fetch failed, falling back to simulated data:", err);
       connectionLog.setStatus("fallback");
@@ -836,9 +785,7 @@ analyzeBtn.addEventListener("click", async () => {
     sourceNote =
       err instanceof FortyGuardConfigError
         ? "Simulated data — no FortyGuard API key configured yet (see .env.example)."
-        : err instanceof FortyGuardRangeError
-        ? `Simulated data — ${err.message}`
-        : "Simulated data — the live FortyGuard request failed after retrying (likely a brief upstream hiccup, not a bad API key — the credits badge above checks a separate, lighter endpoint). Click Analyze again in a moment; see the connection badge for the exact error.";
+        : "Simulated data — the live FortyGuard climatology request failed after retrying (likely a brief upstream hiccup, not a bad API key — the credits badge above checks a separate, lighter endpoint). Click Analyze again in a moment; see the connection badge for the exact error.";
   }
 
   analyzeBtn.disabled = false;

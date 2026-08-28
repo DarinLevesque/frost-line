@@ -71,7 +71,7 @@ export const BENCHMARK_ACRES_PER_MACHINE = 700 * 2.471 / 60; // ≈ 28.8 acres/m
  * Grid resolution for the MOCK data path (buildPropertyGrid + mockData.ts).
  * The LIVE path doesn't use this — FortyGuard's own Create Heatmap tiles
  * (60/80/100 m, see FORTYGUARD_NOTES.granularityOptionsM) become the risk
- * cells directly, at whichever granularity fetchLiveRiskCells() requests.
+ * cells directly, at whichever granularity fetchClimatologyRiskCells() requests.
  */
 export const GRID_RESOLUTION_M = 60;
 

@@ -194,15 +194,13 @@ async function withOneRetry<T>(fn: () => Promise<T>): Promise<T> {
   throw lastErr;
 }
 
-export interface LiveRiskQuery {
-  /** Property boundary — a MultiPolygon (combined drawn blocks) submits one request per component polygon, in parallel. */
-  boundary: Feature<Polygon | MultiPolygon>;
-  /** Active LT50 frost threshold, °F (converted to °C for the API). */
-  thresholdF: number;
-  /** YYYY-MM-DD, inclusive. FortyGuard caps a single range-of-days request at 1 month. */
+interface HeatmapWindowArgs {
+  /** YYYY-MM-DD, inclusive. */
   startDate: string;
   /** YYYY-MM-DD, inclusive. */
   endDate: string;
+  /** Active LT50 frost threshold, °F (converted to °C for the API). */
+  thresholdF: number;
   /** Tile size in meters. 60 is the finest FortyGuard offers. */
   granularityM?: 60 | 80 | 100;
 }
@@ -218,7 +216,7 @@ function hoursBetween(startDate: string, endDate: string): number {
 }
 
 /** FortyGuard's documented cap for a single filter_type 4 (range of days) request. */
-export const MAX_RANGE_DAYS = 31;
+const MAX_RANGE_DAYS = 31;
 
 function daysBetween(startDate: string, endDate: string): number {
   const start = new Date(`${startDate}T00:00:00Z`).getTime();
@@ -228,8 +226,26 @@ function daysBetween(startDate: string, endDate: string): number {
 
 async function submitHeatmap(
   polygon: Feature<Polygon>,
-  query: LiveRiskQuery
+  args: HeatmapWindowArgs
 ): Promise<string> {
+  // Validated here, not just by the climatology windows below, so this
+  // stays a hard backstop against a repeat of the Aug 28 bug (a >31-day
+  // window reaching FortyGuard as a bare 500) for any future caller too.
+  const rangeDays = daysBetween(args.startDate, args.endDate);
+  if (rangeDays < 0) {
+    throw new FortyGuardRangeError(
+      `End date ${args.endDate} is before start date ${args.startDate}.`
+    );
+  }
+  if (rangeDays > MAX_RANGE_DAYS) {
+    throw new FortyGuardRangeError(
+      `Date range too wide: ${args.startDate} to ${args.endDate} is ${rangeDays} days — ` +
+        `FortyGuard's Create Heatmap endpoint covers at most ${MAX_RANGE_DAYS} days per request ` +
+        `(it returns a 500 rather than a clear validation error when this is exceeded). ` +
+        `Narrow the date range and try again.`
+    );
+  }
+
   const data = await withOneRetry(() =>
     fetchAndLog("Submit heatmap request", "POST", "/api/fortyguard/heatmap", {
       method: "POST",
@@ -237,13 +253,13 @@ async function submitHeatmap(
       body: JSON.stringify({
         polygon_aoi: turf.featureCollection([polygon]),
         date_time: {
-          start_date: query.startDate,
-          end_date: query.endDate,
+          start_date: args.startDate,
+          end_date: args.endDate,
           filter_type: 4,
         },
-        granularity: query.granularityM ?? 60,
+        granularity: args.granularityM ?? 60,
         analytic_type: "exceedance",
-        threshold: fahrenheitToCelsius(query.thresholdF),
+        threshold: fahrenheitToCelsius(args.thresholdF),
         direction: "below",
       }),
     })
@@ -278,125 +294,231 @@ async function pollHeatmap(activityId: string): Promise<any> {
 }
 
 /**
- * Convert one Create Heatmap "exceedance" result into RiskCell[]. Each
- * map_data feature is one FortyGuard tile at the requested granularity;
- * its exceedance value (hours below threshold, over the requested date
- * range) becomes coldHourCount, normalized by the range's total hours to a
- * 0..1 riskScore — same meaning as the mock pipeline's riskScore, so
- * placement.ts and savings.ts don't need to know which source produced it.
+ * Number of most recent spring seasons (Mar 1–May 31) the live climatology
+ * aggregates across, by default. Every LT50 growth stage this app tracks
+ * (dormant through four-leaf) is a spring bud-development stage, so autumn
+ * is deliberately out of scope — no point spending credits on data that
+ * can't inform this app's risk score.
  */
-function tilesToRiskCells(mapData: any, totalHours: number): RiskCell[] {
-  const features: any[] = mapData?.features ?? [];
-  return features.map((f, i) => {
-    const props = f.properties ?? {};
-    // `value` is the confirmed exceedance-hours property name (live-verified
-    // 2026-08-27). Keep a defensive fallback in case FortyGuard renames it.
-    const coldHourCount = Number(props.value ?? 0);
-    const [lng, lat] = turf.centroid(f).geometry.coordinates;
-    return {
-      id: `fg-tile-${i}`,
-      lat,
-      lng,
-      polygon: f as Feature<Polygon>,
-      riskScore: Math.max(0, Math.min(1, coldHourCount / totalHours)),
-      // Exceedance responses don't include a per-tile minimum temperature —
-      // that would need a separate analytic_type: "tcm" request. Left null
-      // rather than guessed; the map tooltip and results panel handle it.
-      worstTempF: null,
-      coldHourCount,
-      sampleCount: totalHours,
-    };
-  });
+export const CLIMATOLOGY_SEASON_COUNT = 3;
+
+/** How many (polygon, season-window) FortyGuard requests run at once — kept modest since FortyGuard's own per-account concurrency limits aren't documented. */
+const CLIMATOLOGY_CONCURRENCY = 6;
+
+/** Matches FORTYGUARD_NOTES.historyStart in constants.ts — duplicated as a number here to keep the year math simple; both are asserted to agree by the caller (main.ts). */
+const MIN_HISTORY_YEAR = 2019;
+
+/** The three ≤31-day requests (Mar, Apr, May — fixed lengths, no leap-year handling needed) that make up one spring season. */
+function springWindowsForYear(
+  year: number
+): { startDate: string; endDate: string; label: string }[] {
+  return [
+    { startDate: `${year}-03-01`, endDate: `${year}-03-31`, label: `Mar ${year}` },
+    { startDate: `${year}-04-01`, endDate: `${year}-04-30`, label: `Apr ${year}` },
+    { startDate: `${year}-05-01`, endDate: `${year}-05-31`, label: `May ${year}` },
+  ];
 }
 
 /**
- * Pull real frost-risk cells from FortyGuard for the given boundary and
- * date range. Throws FortyGuardConfigError if no API key is configured
- * server-side — callers should catch that specifically and fall back to
- * src/lib/mockData.ts, exactly as main.ts does.
- *
- * A boundary with more than one disjoint block submits one request per
- * polygon, in parallel, via Promise.allSettled rather than Promise.all: one
- * slow or momentarily-flaky block (a single dropped connection, a rate
- * limit hit on just that call) no longer takes the *entire* property back
- * to simulated data — as long as at least one polygon's request succeeds,
- * its cells are used and the rest are reported as partial coverage. Every
- * block failing is still treated as a hard failure so the caller falls
- * back to mock data, same as before.
+ * The `seasonCount` most recent COMPLETE spring seasons (a season only
+ * counts once its May 31 has passed), not earlier than MIN_HISTORY_YEAR.
+ * Oldest first, so callers can display "2024, 2025, 2026" in chronological
+ * order rather than counting down.
  */
-export async function fetchLiveRiskCells(
-  query: LiveRiskQuery
-): Promise<RiskCell[]> {
-  const rangeDays = daysBetween(query.startDate, query.endDate);
-  if (rangeDays < 0) {
-    throw new FortyGuardRangeError(
-      `End date ${query.endDate} is before start date ${query.startDate}.`
-    );
+export function recentSpringSeasonYears(
+  seasonCount: number,
+  now: Date = new Date()
+): number[] {
+  const currentYear = now.getUTCFullYear();
+  const mayEndThisYear = Date.UTC(currentYear, 4, 31, 23, 59, 59); // May is JS month index 4
+  const lastCompleteYear = now.getTime() >= mayEndThisYear ? currentYear : currentYear - 1;
+  const years: number[] = [];
+  for (let y = lastCompleteYear; years.length < seasonCount && y >= MIN_HISTORY_YEAR; y--) {
+    years.push(y);
   }
-  if (rangeDays > MAX_RANGE_DAYS) {
-    throw new FortyGuardRangeError(
-      `Date range too wide: ${query.startDate} to ${query.endDate} is ${rangeDays} days — ` +
-        `FortyGuard's Create Heatmap endpoint covers at most ${MAX_RANGE_DAYS} days per request ` +
-        `(it returns a 500 rather than a clear validation error when this is exceeded). ` +
-        `Narrow the date range and try again.`
-    );
+  return years.reverse();
+}
+
+/** Runs `fn` over `items` with at most `limit` in flight at once, returning settled results in the original order — same shape as Promise.allSettled, just bounded. */
+async function settleWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      try {
+        results[i] = { status: "fulfilled", value: await fn(items[i]) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
   }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker())
+  );
+  return results;
+}
+
+export interface ClimatologyQuery {
+  /** Property boundary — a MultiPolygon (combined drawn blocks) submits requests per component polygon. */
+  boundary: Feature<Polygon | MultiPolygon>;
+  /** Active LT50 frost threshold, °F (converted to °C for the API). */
+  thresholdF: number;
+  /** How many recent spring seasons to aggregate; defaults to CLIMATOLOGY_SEASON_COUNT. */
+  seasonCount?: number;
+  /** Tile size in meters. 60 is the finest FortyGuard offers. */
+  granularityM?: 60 | 80 | 100;
+  /** Called after each (polygon, season-window) request settles, for progress UI. */
+  onProgress?: (completed: number, total: number) => void;
+}
+
+export interface ClimatologyResult {
+  cells: RiskCell[];
+  /** The spring years actually aggregated, oldest first. */
+  seasonsUsed: number[];
+}
+
+/**
+ * Build a multi-year frost climatology instead of scoring risk from one
+ * arbitrary date window: fetch FortyGuard's exceedance heatmap for the
+ * Mar/Apr/May windows of each of the last `seasonCount` spring seasons,
+ * and aggregate every tile's exceedance hours across every season it
+ * appeared in. riskScore becomes "fraction of all spring hours considered,
+ * across N years, that this cell spent below threshold" — a real
+ * historical frequency instead of one arbitrary window's snapshot, and a
+ * much sounder basis for siting fixed equipment than a single date range.
+ *
+ * Tiles are matched across requests by FortyGuard's own `tile_id`
+ * property (stable per location for a given AOI/granularity), not array
+ * position — each request returns its own feature order.
+ *
+ * Requests run with bounded concurrency (CLIMATOLOGY_CONCURRENCY) via
+ * Promise-settled batching: an individual (polygon, window) request that
+ * fails is logged and excluded, not fatal to the whole climatology, as
+ * long as at least one request across the whole matrix succeeds — same
+ * partial-failure philosophy the single-window version used. A fully
+ * failed matrix throws (FortyGuardConfigError propagates as-is so the
+ * caller's mock-data fallback path stays intact).
+ */
+export async function fetchClimatologyRiskCells(
+  query: ClimatologyQuery
+): Promise<ClimatologyResult> {
+  const seasonCount = query.seasonCount ?? CLIMATOLOGY_SEASON_COUNT;
+  const years = recentSpringSeasonYears(seasonCount);
 
   const polygons: Feature<Polygon>[] =
     query.boundary.geometry.type === "Polygon"
       ? [query.boundary as Feature<Polygon>]
       : (turf.flatten(query.boundary).features as Feature<Polygon>[]);
 
-  const totalHours = hoursBetween(query.startDate, query.endDate);
-
-  const settled = await Promise.allSettled(
-    polygons.map(async (polygon) => {
-      const activityId = await withOneRetry(() => submitHeatmap(polygon, query));
-      const result = await pollHeatmap(activityId);
-      return tilesToRiskCells(result?.map_data, totalHours);
-    })
+  const jobs = polygons.flatMap((polygon) =>
+    years.flatMap((year) =>
+      springWindowsForYear(year).map((window) => ({ polygon, window }))
+    )
   );
 
+  let completed = 0;
+  const settled = await settleWithConcurrency(jobs, CLIMATOLOGY_CONCURRENCY, async (job) => {
+    const activityId = await withOneRetry(() =>
+      submitHeatmap(job.polygon, {
+        startDate: job.window.startDate,
+        endDate: job.window.endDate,
+        thresholdF: query.thresholdF,
+        granularityM: query.granularityM,
+      })
+    );
+    const result = await pollHeatmap(activityId);
+    const hours = hoursBetween(job.window.startDate, job.window.endDate);
+    const tiles: any[] = result?.map_data?.features ?? [];
+    query.onProgress?.(++completed, jobs.length);
+    return { tiles, hours };
+  });
+
   const fulfilled = settled.filter(
-    (r): r is PromiseFulfilledResult<RiskCell[]> => r.status === "fulfilled"
+    (r): r is PromiseFulfilledResult<{ tiles: any[]; hours: number }> =>
+      r.status === "fulfilled"
   );
   const rejected = settled.filter(
     (r): r is PromiseRejectedResult => r.status === "rejected"
   );
 
   if (fulfilled.length === 0) {
-    // Every block failed — surface the first block's error (a
-    // FortyGuardConfigError propagates as-is so the caller's mock-data
-    // fallback path stays intact; anything else becomes a normal Error).
     const first = rejected[0]?.reason;
     if (first instanceof FortyGuardConfigError) throw first;
     throw new Error(
-      rejected.length > 1
-        ? `All ${rejected.length} property blocks failed to fetch live data — see the connection log for details.`
-        : String(first instanceof Error ? first.message : first)
+      `All ${rejected.length} FortyGuard climatology requests failed — see the connection log for details.`
     );
   }
 
   if (rejected.length > 0) {
-    // Partial success: log it so it's visible in the inspector, but don't
-    // fail the whole analysis over it — the caller still gets real data
-    // for the blocks that worked.
     console.warn(
-      `FortyGuard: ${rejected.length}/${polygons.length} property block(s) failed to fetch live data; continuing with the ${fulfilled.length} that succeeded.`,
+      `FortyGuard climatology: ${rejected.length}/${jobs.length} (polygon, season-window) request(s) failed; continuing with the ${fulfilled.length} that succeeded.`,
       rejected.map((r) => r.reason)
     );
   }
 
-  return fulfilled.flatMap((r) => r.value);
-}
+  // Aggregate every tile's exceedance hours across every window it showed
+  // up in, keyed by FortyGuard's own tile_id (falls back to a coordinate
+  // key in the unlikely case a response omits it, so one odd response
+  // shape can't silently merge unrelated tiles together).
+  const agg = new Map<
+    string,
+    { coldHours: number; totalHours: number; polygon: Feature<Polygon>; lat: number; lng: number }
+  >();
+  for (const { value } of fulfilled) {
+    for (const f of value.tiles) {
+      const props = f.properties ?? {};
+      const tileId = String(props.tile_id ?? JSON.stringify(f.geometry?.coordinates?.[0]?.[0] ?? []));
+      const coldHours = Number(props.value ?? 0);
+      const existing = agg.get(tileId);
+      if (existing) {
+        existing.coldHours += coldHours;
+        existing.totalHours += value.hours;
+      } else {
+        const [lng, lat] = turf.centroid(f).geometry.coordinates;
+        agg.set(tileId, {
+          coldHours,
+          totalHours: value.hours,
+          polygon: f as Feature<Polygon>,
+          lat,
+          lng,
+        });
+      }
+    }
+  }
 
+  const cells: RiskCell[] = Array.from(agg.entries()).map(([tileId, v]) => ({
+    id: `fg-tile-${tileId}`,
+    lat: v.lat,
+    lng: v.lng,
+    polygon: v.polygon,
+    riskScore: Math.max(0, Math.min(1, v.coldHours / v.totalHours)),
+    // Exceedance responses don't include a per-tile minimum temperature —
+    // that would need a separate analytic_type: "tcm" request per window.
+    // Left null rather than guessed; the map tooltip and results panel
+    // already handle a null worstTempF.
+    worstTempF: null,
+    coldHourCount: v.coldHours,
+    sampleCount: v.totalHours,
+  }));
+
+  if (cells.length === 0) {
+    throw new Error("FortyGuard climatology returned no tiles across any successful request.");
+  }
+
+  return { cells, seasonsUsed: years };
+}
 
 /**
  * Pull the current FortyGuard account's credit usage — total/remaining
  * credits for the billing cycle, plan details, and a per-activity
  * breakdown (e.g. how much of it Heatmap Generation has consumed).
  * Throws FortyGuardConfigError if no API key is configured server-side,
- * same convention as fetchLiveRiskCells — callers should catch that
+ * same convention as fetchClimatologyRiskCells — callers should catch that
  * specifically and show a "not configured" state rather than an error.
  */
 export async function fetchCreditsUsage(): Promise<CreditsUsage> {
