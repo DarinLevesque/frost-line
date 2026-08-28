@@ -119,6 +119,25 @@ body { background: var(--paper); color: var(--ink); }
 .assumptions { margin: 0; padding-left: 18px; font-size: 0.8rem; color: var(--muted); }
 .assumptions li { margin: 5px 0; }
 
+.crosscheck-box {
+  background: #eaf2f6;
+  border: 1px dashed var(--cold);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 12px;
+}
+.crosscheck-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cold);
+  font-weight: 600;
+}
+.crosscheck-box .hint { margin: 6px 0 0; color: var(--ink-soft); }
+
 #map { height: 100%; width: 100%; }
 
 .credits-bar {

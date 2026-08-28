@@ -21,6 +21,7 @@ import {
 } from "./lib/constants";
 import type { GrowthStage, RiskCell } from "./lib/types";
 import { PARAMETER_INFO } from "./lib/parameterInfo";
+import { fetchOpenMeteoFrostCrossCheck } from "./lib/openMeteoCrossCheck";
 import {
   DEFAULT_WIND_MACHINE_PROFILE,
   COMING_SOON_WIND_MACHINE_PROFILES,
@@ -223,6 +224,13 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="cost-row"><span>Rough payback period</span><strong id="stat-payback">–</strong></div>
         </div>
         <ul class="assumptions" id="assumptions"></ul>
+        <div class="crosscheck-box" id="crosscheck-box" hidden>
+          <div class="crosscheck-header">
+            <span>Independent cross-check (not FortyGuard data)</span>
+            <button type="button" class="info-icon" data-info-key="open-meteo-crosscheck" aria-label="What is this?">i</button>
+          </div>
+          <p class="hint" id="crosscheck-note">–</p>
+        </div>
       </section>
     </aside>
     <main id="map"></main>
@@ -305,6 +313,7 @@ const climatologySeasonYears = recentSpringSeasonYears(CLIMATOLOGY_SEASON_COUNT)
 const climatologyRequestCount = CLIMATOLOGY_SEASON_COUNT * 3; // Mar + Apr + May per season, per property block
 document.querySelector<HTMLElement>("#climatology-window-note")!.textContent =
   `Spring ${climatologySeasonYears.join(", ")} (Mar 1–May 31 each, ${CLIMATOLOGY_SEASON_COUNT} most recent seasons back to ${FORTYGUARD_NOTES.historyStart.slice(0, 4)}). ` +
+  `Each cell is scored by its WORST single season, not an average — a bad spring shouldn't get diluted by two mild ones. ` +
   `That's ${climatologyRequestCount} FortyGuard requests per property block on every Analyze — worth it for real historical frequency instead of one snapshot, but not something to click repeatedly without reason.`;
 
 const estimateWindBtn = document.querySelector<HTMLButtonElement>("#estimate-wind")!;
@@ -690,6 +699,7 @@ function resetResults() {
   frostMap.clearAnalysisLayers();
   resultsSection.hidden = true;
   clearResultsBtn.hidden = true;
+  crosscheckBox.hidden = true;
 }
 
 frostMap.onBoundaryChange((b) => {
@@ -716,6 +726,8 @@ clearResultsBtn.addEventListener("click", resetResults);
 
 const analyzeBtn = document.querySelector<HTMLButtonElement>("#analyze")!;
 const resultsSourceNote = document.querySelector<HTMLElement>("#results-source-note")!;
+const crosscheckBox = document.querySelector<HTMLElement>("#crosscheck-box")!;
+const crosscheckNote = document.querySelector<HTMLElement>("#crosscheck-note")!;
 
 analyzeBtn.addEventListener("click", async () => {
   const boundary = currentBoundary ?? frostMap.drawnBoundary();
@@ -762,11 +774,43 @@ analyzeBtn.addEventListener("click", async () => {
       },
     });
     cells = climatology.cells;
-    sourceNote = `Live FortyGuard climatology — spring seasons ${climatology.seasonsUsed.join(", ")}.`;
+    sourceNote =
+      `Live FortyGuard climatology — worst of spring seasons ${climatology.seasonsUsed.join(", ")} ` +
+      `(most cells' worst season: ${climatology.dominantWorstSeasonYear}).`;
     connectionLog.setStatus("connected");
     // That request just spent credits — refresh the meter (fire-and-forget,
     // shouldn't block or fail the analysis flow if it errors).
     void refreshCreditsUsage();
+
+    // Independent cross-check against Open-Meteo's historical reanalysis
+    // (see src/lib/openMeteoCrossCheck.ts) — only runs when the live
+    // FortyGuard climatology itself succeeded, since "cross-check" only
+    // means something next to real FortyGuard data, not our own
+    // simulated fallback. Best-effort: a failure here just hides the box,
+    // it never breaks the main Analyze flow.
+    try {
+      const [centroidLng, centroidLat] = turf
+        .centroid(boundary)
+        .geometry.coordinates as [number, number];
+      const crossCheck = await fetchOpenMeteoFrostCrossCheck({
+        lat: centroidLat,
+        lng: centroidLng,
+        years: climatology.seasonsUsed,
+        thresholdF,
+      });
+      const fgAvgWorstSeasonRisk =
+        cells.reduce((sum, c) => sum + c.riskScore, 0) / cells.length;
+      crosscheckBox.hidden = false;
+      crosscheckNote.textContent =
+        `Open-Meteo historical reanalysis, at this property's centroid (independent of FortyGuard, a single point — not per-tile): ` +
+        `worst season ${crossCheck.worstSeasonYear} was ${(crossCheck.worstSeasonFraction * 100).toFixed(1)}% of spring hours below ${thresholdF}°F ` +
+        `(typical season: ${(crossCheck.typicalFraction * 100).toFixed(1)}%). ` +
+        `FortyGuard's own per-tile average worst-season risk across this property: ${(fgAvgWorstSeasonRisk * 100).toFixed(1)}%. ` +
+        `A large gap between these two numbers is itself informative — see the info icon.`;
+    } catch (crossCheckErr) {
+      console.warn("Open-Meteo cross-check failed:", crossCheckErr);
+      crosscheckBox.hidden = true;
+    }
   } catch (err) {
     // 2. No key configured yet (expected until .env.local is set up), or
     //    the live call failed for some other reason — fall back to the

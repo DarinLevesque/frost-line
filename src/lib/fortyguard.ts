@@ -380,21 +380,42 @@ export interface ClimatologyResult {
   cells: RiskCell[];
   /** The spring years actually aggregated, oldest first. */
   seasonsUsed: number[];
+  /**
+   * The spring year that was the worst season for the largest number of
+   * cells (i.e. the year most responsible for the property's riskScores) —
+   * a simple mode across cells' worstSeasonYear, useful for a one-line
+   * "driven mainly by spring {year}" summary in the UI. Ties break toward
+   * the more recent year.
+   */
+  dominantWorstSeasonYear: number;
 }
 
 /**
  * Build a multi-year frost climatology instead of scoring risk from one
  * arbitrary date window: fetch FortyGuard's exceedance heatmap for the
- * Mar/Apr/May windows of each of the last `seasonCount` spring seasons,
- * and aggregate every tile's exceedance hours across every season it
- * appeared in. riskScore becomes "fraction of all spring hours considered,
- * across N years, that this cell spent below threshold" — a real
- * historical frequency instead of one arbitrary window's snapshot, and a
- * much sounder basis for siting fixed equipment than a single date range.
+ * Mar/Apr/May windows of each of the last `seasonCount` spring seasons.
+ *
+ * riskScore is the WORST single season's fraction of below-threshold
+ * hours for that cell, not an average across seasons. This was a
+ * deliberate correction (2026-08-28, after live testing against Stone
+ * Tower's actual 2026 frost event): pooling every season's cold/total
+ * hours into one combined fraction lets a catastrophic spring get diluted
+ * by milder ones sitting next to it in the same average — a property that
+ * lost ~90% of its buds to one devastating spring showed under 1%
+ * "risk" once blended with two mild seasons. Placement decisions need to
+ * be driven by the worst case a site has actually seen, not a smoothed
+ * multi-year mean. `typicalRiskScore` (the mean across seasons) is still
+ * computed and attached to each cell as a secondary "how often does this
+ * happen in an ordinary year" reference point — worst-case for siting,
+ * typical-case for context — and `worstSeasonYear` records which season
+ * produced the riskScore so the UI/demo can name it (e.g. "2026").
  *
  * Tiles are matched across requests by FortyGuard's own `tile_id`
  * property (stable per location for a given AOI/granularity), not array
- * position — each request returns its own feature order.
+ * position — each request returns its own feature order. Within a tile,
+ * hours are first summed per season (Mar+Apr+May) before the worst season
+ * is picked — a tile can't be judged "worst" from a single month's window,
+ * only from its full spring total for that year.
  *
  * Requests run with bounded concurrency (CLIMATOLOGY_CONCURRENCY) via
  * Promise-settled batching: an individual (polygon, window) request that
@@ -417,7 +438,7 @@ export async function fetchClimatologyRiskCells(
 
   const jobs = polygons.flatMap((polygon) =>
     years.flatMap((year) =>
-      springWindowsForYear(year).map((window) => ({ polygon, window }))
+      springWindowsForYear(year).map((window) => ({ polygon, year, window }))
     )
   );
 
@@ -435,11 +456,11 @@ export async function fetchClimatologyRiskCells(
     const hours = hoursBetween(job.window.startDate, job.window.endDate);
     const tiles: any[] = result?.map_data?.features ?? [];
     query.onProgress?.(++completed, jobs.length);
-    return { tiles, hours };
+    return { tiles, hours, year: job.year };
   });
 
   const fulfilled = settled.filter(
-    (r): r is PromiseFulfilledResult<{ tiles: any[]; hours: number }> =>
+    (r): r is PromiseFulfilledResult<{ tiles: any[]; hours: number; year: number }> =>
       r.status === "fulfilled"
   );
   const rejected = settled.filter(
@@ -461,56 +482,95 @@ export async function fetchClimatologyRiskCells(
     );
   }
 
-  // Aggregate every tile's exceedance hours across every window it showed
-  // up in, keyed by FortyGuard's own tile_id (falls back to a coordinate
-  // key in the unlikely case a response omits it, so one odd response
-  // shape can't silently merge unrelated tiles together).
+  // Aggregate every tile's exceedance hours per SEASON first (Mar+Apr+May
+  // summed within a year), keyed by FortyGuard's own tile_id (falls back
+  // to a coordinate key in the unlikely case a response omits it, so one
+  // odd response shape can't silently merge unrelated tiles together).
+  // Seasons are kept separate here — deliberately not pooled into one
+  // combined fraction — so the worst season can be picked out below
+  // instead of averaged away (see the function doc comment above).
   const agg = new Map<
     string,
-    { coldHours: number; totalHours: number; polygon: Feature<Polygon>; lat: number; lng: number }
+    {
+      polygon: Feature<Polygon>;
+      lat: number;
+      lng: number;
+      perYear: Map<number, { coldHours: number; totalHours: number }>;
+    }
   >();
   for (const { value } of fulfilled) {
     for (const f of value.tiles) {
       const props = f.properties ?? {};
       const tileId = String(props.tile_id ?? JSON.stringify(f.geometry?.coordinates?.[0]?.[0] ?? []));
       const coldHours = Number(props.value ?? 0);
-      const existing = agg.get(tileId);
-      if (existing) {
-        existing.coldHours += coldHours;
-        existing.totalHours += value.hours;
-      } else {
+      let entry = agg.get(tileId);
+      if (!entry) {
         const [lng, lat] = turf.centroid(f).geometry.coordinates;
-        agg.set(tileId, {
-          coldHours,
-          totalHours: value.hours,
-          polygon: f as Feature<Polygon>,
-          lat,
-          lng,
-        });
+        entry = { polygon: f as Feature<Polygon>, lat, lng, perYear: new Map() };
+        agg.set(tileId, entry);
       }
+      const yearAgg = entry.perYear.get(value.year) ?? { coldHours: 0, totalHours: 0 };
+      yearAgg.coldHours += coldHours;
+      yearAgg.totalHours += value.hours;
+      entry.perYear.set(value.year, yearAgg);
     }
   }
 
-  const cells: RiskCell[] = Array.from(agg.entries()).map(([tileId, v]) => ({
-    id: `fg-tile-${tileId}`,
-    lat: v.lat,
-    lng: v.lng,
-    polygon: v.polygon,
-    riskScore: Math.max(0, Math.min(1, v.coldHours / v.totalHours)),
-    // Exceedance responses don't include a per-tile minimum temperature —
-    // that would need a separate analytic_type: "tcm" request per window.
-    // Left null rather than guessed; the map tooltip and results panel
-    // already handle a null worstTempF.
-    worstTempF: null,
-    coldHourCount: v.coldHours,
-    sampleCount: v.totalHours,
-  }));
+  const cells: RiskCell[] = Array.from(agg.entries()).map(([tileId, v]) => {
+    const seasonFractions = Array.from(v.perYear.entries()).map(([year, y]) => ({
+      year,
+      fraction: y.totalHours > 0 ? y.coldHours / y.totalHours : 0,
+      coldHours: y.coldHours,
+      totalHours: y.totalHours,
+    }));
+    // Worst season = highest fraction of below-threshold hours. This is
+    // the whole point of the fix: a single devastating spring drives the
+    // score instead of being smoothed out by milder years next to it.
+    const worst = seasonFractions.reduce((a, b) => (b.fraction > a.fraction ? b : a));
+    const typicalRiskScore =
+      seasonFractions.reduce((sum, y) => sum + y.fraction, 0) / seasonFractions.length;
+
+    return {
+      id: `fg-tile-${tileId}`,
+      lat: v.lat,
+      lng: v.lng,
+      polygon: v.polygon,
+      riskScore: Math.max(0, Math.min(1, worst.fraction)),
+      // Exceedance responses don't include a per-tile minimum temperature —
+      // that would need a separate analytic_type: "tcm" request per window.
+      // Left null rather than guessed; the map tooltip and results panel
+      // already handle a null worstTempF.
+      worstTempF: null,
+      // Hours from the worst season specifically, not summed across all
+      // seasons — kept consistent with riskScore being a worst-season
+      // fraction, so "coldHourCount/sampleCount" in the tooltip reads as
+      // one coherent season, not a mix of years with different totals.
+      coldHourCount: worst.coldHours,
+      sampleCount: worst.totalHours,
+      worstSeasonYear: worst.year,
+      typicalRiskScore: Math.max(0, Math.min(1, typicalRiskScore)),
+    };
+  });
 
   if (cells.length === 0) {
     throw new Error("FortyGuard climatology returned no tiles across any successful request.");
   }
 
-  return { cells, seasonsUsed: years };
+  const worstYearCounts = new Map<number, number>();
+  for (const cell of cells) {
+    if (cell.worstSeasonYear === undefined) continue;
+    worstYearCounts.set(cell.worstSeasonYear, (worstYearCounts.get(cell.worstSeasonYear) ?? 0) + 1);
+  }
+  let dominantWorstSeasonYear = years[years.length - 1];
+  let dominantCount = -1;
+  for (const [year, count] of worstYearCounts) {
+    if (count > dominantCount || (count === dominantCount && year > dominantWorstSeasonYear)) {
+      dominantWorstSeasonYear = year;
+      dominantCount = count;
+    }
+  }
+
+  return { cells, seasonsUsed: years, dominantWorstSeasonYear };
 }
 
 /**

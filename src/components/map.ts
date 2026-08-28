@@ -164,7 +164,11 @@ export function initFrostMap(containerId: string): FrostMap {
           },
         })
           .bindTooltip(
-            `Risk ${Math.round(cell.riskScore * 100)}%${cell.worstTempF !== null ? ` · worst ${cell.worstTempF.toFixed(1)}°F` : ""} · ${cell.coldHourCount}/${cell.sampleCount} below threshold`,
+            `Risk ${Math.round(cell.riskScore * 100)}%` +
+              `${cell.worstSeasonYear !== undefined ? ` (worst season: ${cell.worstSeasonYear})` : ""}` +
+              `${cell.worstTempF !== null ? ` · worst ${cell.worstTempF.toFixed(1)}°F` : ""}` +
+              ` · ${cell.coldHourCount}/${cell.sampleCount} below threshold` +
+              `${cell.typicalRiskScore !== undefined ? ` · typical season ${Math.round(cell.typicalRiskScore * 100)}%` : ""}`,
             { sticky: true }
           )
           .addTo(analysisLayer);

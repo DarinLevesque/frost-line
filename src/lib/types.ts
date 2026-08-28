@@ -28,6 +28,20 @@ export interface RiskCell {
   coldHourCount: number;
   /** Total samples considered for this cell. */
   sampleCount: number;
+  /**
+   * For a multi-season climatology: the single spring year whose fraction
+   * of below-threshold hours was highest for this cell (i.e. the year
+   * riskScore is drawn from). Undefined for single-window/mock scoring,
+   * which has no "seasons" to compare.
+   */
+  worstSeasonYear?: number;
+  /**
+   * For a multi-season climatology: the average of each season's fraction
+   * of below-threshold hours, as a "typical spring" reference point next to
+   * riskScore's "worst spring on record." Undefined for single-window/mock
+   * scoring.
+   */
+  typicalRiskScore?: number;
 }
 
 /** A recommended wind machine placement. */

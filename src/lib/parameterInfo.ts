@@ -55,11 +55,20 @@ export const PARAMETER_INFO: Record<string, ParameterInfo> = {
   "history-window": {
     title: "Historical window (FortyGuard climatology)",
     whatItDoes:
-      "Instead of scoring risk from one arbitrary date window, this app fetches FortyGuard's live exceedance data for the Mar 1–May 31 window of each of the last few spring seasons and aggregates every grid cell's exceedance hours across all of them. riskScore becomes “fraction of all spring hours, across those years, that this cell spent below threshold” — a real historical frequency, not a single snapshot. Only spring is fetched: every LT50 growth stage this app tracks (dormant through four-leaf) is a spring bud-development stage, so autumn data wouldn't change the score.",
+      "Instead of scoring risk from one arbitrary date window, this app fetches FortyGuard's live exceedance data for the Mar 1–May 31 window of each of the last few spring seasons. riskScore is each cell's WORST single season, not an average across seasons — a devastating spring (one that wipes out most of the crop) needs to show up as high risk, not get smoothed away by milder years sitting next to it in a blended mean. A separate “typical season” figure (the average across seasons) is also computed, so both “how bad can it get” and “how often is an ordinary year” are visible. Only spring is fetched: every LT50 growth stage this app tracks (dormant through four-leaf) is a spring bud-development stage, so autumn data wouldn't change the score.",
     whereToGetIt:
       "Confirmed directly against FortyGuard's own API documentation: historical data is available from 2019-01-01 through about 12 hours ahead of the current time, and a single request is capped at roughly one month of range — which is why this needs 3 requests (Mar/Apr/May) per spring season rather than one.",
     dissertationConnection:
       "Not dissertation-sourced — this is FortyGuard's own data coverage and is unrelated to the TU Delft study.",
+  },
+  "open-meteo-crosscheck": {
+    title: "Why show an Open-Meteo number next to FortyGuard's?",
+    whatItDoes:
+      "FortyGuard's own product pages describe its Large Temperature Model as built for heat/urban-heat use cases — managing urban heat for governments, utilities, insurers, data centers — with no mention of cold, frost, or agriculture. Testing this app against a real, well-documented, devastating spring 2026 Virginia frost found FortyGuard's data reporting only ~30-31°F at two independently checked vineyard sites, on a night regional sources put at 10-25°F. That's a legitimate finding about applying the platform to a use case outside what it was built and validated for — possibly just a model-training parameter FortyGuard hasn't had a reason to open up — not a flaw in this app's math. So this app shows a second, independent number (Open-Meteo's free ERA5-based historical reanalysis, no FortyGuard data involved) side by side, clearly labeled, rather than presenting FortyGuard's number alone as settled fact.",
+    whereToGetIt:
+      "Open-Meteo's Historical Weather API (archive-api.open-meteo.com), a free, key-less, CORS-enabled service backed by ERA5/ERA5-Land reanalysis — the same source already used elsewhere in this app for the historical prevailing-wind estimate.",
+    dissertationConnection:
+      "Not dissertation-sourced. This is a cross-check between two independent data providers, added after discovering FortyGuard's own product focus doesn't include cold-weather use cases — see the writeup in this repo's history for the full investigation (two real sites, exact dates, exact API responses).",
   },
   "wind-turbine-vs-machine": {
     title: "Why not a power-generating wind turbine?",
