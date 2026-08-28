@@ -2,7 +2,13 @@ import "./style.css";
 import { initFrostMap, type Boundary } from "./components/map";
 import { buildPropertyGrid, scoreCell } from "./lib/grid";
 import { generateMockSamplesForCell } from "./lib/mockData";
-import { fetchLiveRiskCells, fetchCreditsUsage, FortyGuardConfigError } from "./lib/fortyguard";
+import {
+  fetchLiveRiskCells,
+  fetchCreditsUsage,
+  FortyGuardConfigError,
+  FortyGuardRangeError,
+  MAX_RANGE_DAYS,
+} from "./lib/fortyguard";
 import * as connectionLog from "./lib/connectionLog";
 import * as turf from "@turf/turf";
 import { planPlacements } from "./lib/placement";
@@ -304,6 +310,52 @@ function circularMeanBearingDeg(bearingsDeg: number[]): number {
 function isoDateUTC(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
+
+function addDaysISO(iso: string, days: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return isoDateUTC(d);
+}
+
+/**
+ * Keep #history-start/#history-end from ever landing more than
+ * MAX_RANGE_DAYS apart. The pickers' min/max were widened (Aug 27) to span
+ * FortyGuard's full 2019-present history so any past frost season is
+ * reachable, but nothing stopped picking a start and end years apart —
+ * FortyGuard's Create Heatmap endpoint caps a single request at
+ * MAX_RANGE_DAYS and returns a bare 500 (not a validation error) past that,
+ * which read as a flaky API until the request body was inspected. This
+ * dynamically narrows the *other* input's min/max whenever one changes, so
+ * an invalid combination can't be selected — fetchLiveRiskCells still
+ * validates too, as a backstop for anything that reaches it another way.
+ */
+function clampHistoryRange(changed: "start" | "end") {
+  const start = historyStartInput.value;
+  const end = historyEndInput.value;
+  if (!start || !end) return;
+
+  if (changed === "start") {
+    const latestEnd = addDaysISO(start, MAX_RANGE_DAYS);
+    historyEndInput.min = start;
+    historyEndInput.max = latestEnd < HISTORY_MAX_DATE ? latestEnd : HISTORY_MAX_DATE;
+    if (historyEndInput.value < historyEndInput.min || historyEndInput.value > historyEndInput.max) {
+      historyEndInput.value = historyEndInput.max;
+    }
+  } else {
+    const earliestStart = addDaysISO(end, -MAX_RANGE_DAYS);
+    historyStartInput.max = end;
+    historyStartInput.min = earliestStart > HISTORY_MIN_DATE ? earliestStart : HISTORY_MIN_DATE;
+    if (historyStartInput.value < historyStartInput.min || historyStartInput.value > historyStartInput.max) {
+      historyStartInput.value = historyStartInput.min;
+    }
+  }
+}
+
+const historyStartInput = document.querySelector<HTMLInputElement>("#history-start")!;
+const historyEndInput = document.querySelector<HTMLInputElement>("#history-end")!;
+historyStartInput.addEventListener("change", () => clampHistoryRange("start"));
+historyEndInput.addEventListener("change", () => clampHistoryRange("end"));
+clampHistoryRange("start"); // apply once on load so #history-end's bounds match the default start
 
 const estimateWindBtn = document.querySelector<HTMLButtonElement>("#estimate-wind")!;
 const windEstimateNote = document.querySelector<HTMLElement>("#wind-estimate-note")!;
@@ -734,8 +786,8 @@ analyzeBtn.addEventListener("click", async () => {
   const frostNightsPerSeason = Number(
     document.querySelector<HTMLInputElement>("#frost-nights")!.value
   );
-  const historyStart = document.querySelector<HTMLInputElement>("#history-start")!.value;
-  const historyEnd = document.querySelector<HTMLInputElement>("#history-end")!.value;
+  const historyStart = historyStartInput.value;
+  const historyEnd = historyEndInput.value;
   const thresholdF = LT50_THRESHOLDS_F[growthStage] ?? 28;
 
   // Start every analysis from a clean slate — re-running with new
@@ -770,6 +822,8 @@ analyzeBtn.addEventListener("click", async () => {
     //    simulated cold-air-drainage model so the demo never breaks.
     if (err instanceof FortyGuardConfigError) {
       connectionLog.setStatus("not_configured");
+    } else if (err instanceof FortyGuardRangeError) {
+      connectionLog.setStatus("fallback");
     } else {
       console.warn("FortyGuard live fetch failed, falling back to simulated data:", err);
       connectionLog.setStatus("fallback");
@@ -782,6 +836,8 @@ analyzeBtn.addEventListener("click", async () => {
     sourceNote =
       err instanceof FortyGuardConfigError
         ? "Simulated data — no FortyGuard API key configured yet (see .env.example)."
+        : err instanceof FortyGuardRangeError
+        ? `Simulated data — ${err.message}`
         : "Simulated data — the live FortyGuard request failed after retrying (likely a brief upstream hiccup, not a bad API key — the credits badge above checks a separate, lighter endpoint). Click Analyze again in a moment; see the connection badge for the exact error.";
   }
 

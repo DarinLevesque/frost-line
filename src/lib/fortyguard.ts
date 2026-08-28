@@ -55,6 +55,18 @@ const MAX_POLL_ATTEMPTS = 90; // ~6 minutes — Heatmap generation isn't documen
 /** Thrown when the server-side proxy has no FORTYGUARD_API_KEY configured — callers should fall back to mock data, not surface this as a hard error. */
 export class FortyGuardConfigError extends Error {}
 
+/**
+ * Thrown client-side, before any request is submitted, when the requested
+ * date range violates FortyGuard's documented filter_type 4 cap (a single
+ * range-of-days request covers at most MAX_RANGE_DAYS). Caught the same way
+ * as FortyGuardConfigError by callers, but with a message that tells the
+ * user exactly what to fix instead of "the API failed" — a too-wide range
+ * (e.g. picking dates years apart now that the pickers unlock the full
+ * 2019-present history) was traced to upstream 500s that looked identical
+ * to a real outage until the request body was inspected.
+ */
+export class FortyGuardRangeError extends Error {}
+
 function tryParseJsonBody(body: BodyInit | null | undefined): unknown {
   if (typeof body !== "string") return undefined;
   try {
@@ -205,6 +217,15 @@ function hoursBetween(startDate: string, endDate: string): number {
   return Math.max(1, Math.round((end - start) / 3_600_000));
 }
 
+/** FortyGuard's documented cap for a single filter_type 4 (range of days) request. */
+export const MAX_RANGE_DAYS = 31;
+
+function daysBetween(startDate: string, endDate: string): number {
+  const start = new Date(`${startDate}T00:00:00Z`).getTime();
+  const end = new Date(`${endDate}T00:00:00Z`).getTime();
+  return Math.round((end - start) / 86_400_000);
+}
+
 async function submitHeatmap(
   polygon: Feature<Polygon>,
   query: LiveRiskQuery
@@ -306,6 +327,21 @@ function tilesToRiskCells(mapData: any, totalHours: number): RiskCell[] {
 export async function fetchLiveRiskCells(
   query: LiveRiskQuery
 ): Promise<RiskCell[]> {
+  const rangeDays = daysBetween(query.startDate, query.endDate);
+  if (rangeDays < 0) {
+    throw new FortyGuardRangeError(
+      `End date ${query.endDate} is before start date ${query.startDate}.`
+    );
+  }
+  if (rangeDays > MAX_RANGE_DAYS) {
+    throw new FortyGuardRangeError(
+      `Date range too wide: ${query.startDate} to ${query.endDate} is ${rangeDays} days — ` +
+        `FortyGuard's Create Heatmap endpoint covers at most ${MAX_RANGE_DAYS} days per request ` +
+        `(it returns a 500 rather than a clear validation error when this is exceeded). ` +
+        `Narrow the date range and try again.`
+    );
+  }
+
   const polygons: Feature<Polygon>[] =
     query.boundary.geometry.type === "Polygon"
       ? [query.boundary as Feature<Polygon>]
