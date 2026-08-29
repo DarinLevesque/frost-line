@@ -199,17 +199,21 @@ export function initFrostMap(containerId: string): FrostMap {
             // Lead with the plain-language color/relative-risk label (the
             // same bucket that picked this tile's fill color) so a judge
             // reading one tooltip immediately knows what "red" vs "pale"
-            // means here, since the real absolute percentages that follow
-            // are all naturally small (well under 5%) and easy to misread
-            // as "basically the same" at a glance — one decimal place
-            // instead of a rounded whole percent is enough to show real
-            // tile-to-tile differences (e.g. 1.4% vs 2.3%) that Math.round
-            // used to erase.
-            `${bucket.label} · Risk ${(cell.riskScore * 100).toFixed(1)}%` +
-              `${cell.worstSeasonYear !== undefined ? ` (worst spring: ${cell.worstSeasonYear})` : ""}` +
+            // means here. The absolute percentages that follow are real —
+            // but on some properties the whole grid's real spread is only
+            // a few hundredths of a percentage point wide (e.g. 1.32%
+            // lowest vs. 1.58% highest), which even one decimal place can
+            // round into looking identical. Two decimals, PLUS explicitly
+            // stating this run's own low..high range right in the tooltip,
+            // means a user never has to hover every tile and do the
+            // comparison in their head — the range is stated once, right
+            // where the risk number is.
+            `${bucket.label} · Risk ${(cell.riskScore * 100).toFixed(2)}%` +
+              ` (property range this run: ${(minRiskScore * 100).toFixed(2)}%–${(maxRiskScore * 100).toFixed(2)}%)` +
+              `${cell.worstSeasonYear !== undefined ? ` · worst spring: ${cell.worstSeasonYear}` : ""}` +
               `${cell.worstTempF !== null ? ` · worst ${cell.worstTempF.toFixed(1)}°F` : ""}` +
               ` · ${cell.coldHourCount.toFixed(0)}/${cell.sampleCount} spring hours below threshold` +
-              `${cell.typicalRiskScore !== undefined ? ` · typical spring ${(cell.typicalRiskScore * 100).toFixed(1)}%` : ""}`,
+              `${cell.typicalRiskScore !== undefined ? ` · typical spring ${(cell.typicalRiskScore * 100).toFixed(2)}%` : ""}`,
             { sticky: true }
           )
           .addTo(analysisLayer);
