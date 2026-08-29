@@ -28,6 +28,9 @@ import {
   estimateMachineCost,
 } from "./lib/machineCost";
 
+const DISSERTATION_URL =
+  "https://doi.org/10.4233/uuid:7000b291-671c-4ab3-86fa-beeff39bf5df";
+
 document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
   <div class="layout">
     <aside class="panel">
@@ -162,7 +165,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
               (p) => `<option value="${p.id}" disabled>${p.name}</option>`
             ).join("")}
           </select>
-          <p class="hint">Other sizes are <span class="badge-soon">coming soon</span> — every placement below uses the default profile, the machine measured in the dissertation's field trial.</p>
+          <p class="hint">Other sizes are <span class="badge-soon">coming soon</span> — every placement below uses the default profile, the machine measured in <a href="https://doi.org/10.4233/uuid:7000b291-671c-4ab3-86fa-beeff39bf5df" target="_blank" rel="noopener noreferrer">Yi Dai's TU Delft dissertation</a> field trial.</p>
         </label>
         <div class="machine-profile-card">
           <div class="machine-profile-name">${DEFAULT_WIND_MACHINE_PROFILE.name}</div>
@@ -232,6 +235,19 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <p class="hint" id="crosscheck-note">–</p>
         </div>
       </section>
+
+      <footer class="sources-footer">
+        <strong>Science &amp; sources</strong>
+        <p>
+          Wind-machine placement physics: Y. Dai,
+          <em>Wind Machines for Frost Damage Mitigation</em>
+          (<a href="${DISSERTATION_URL}" target="_blank" rel="noopener noreferrer">TU Delft PhD dissertation, 2025 &#8599;</a>).
+          Grapevine frost thresholds: Sugar et al. 2003 (Oregon State).
+          Full citations, FortyGuard API usage notes, and known data
+          limitations are documented in the
+          <a href="https://github.com/DarinLevesque/frost-line#the-science" target="_blank" rel="noopener noreferrer">project README &#8599;</a>.
+        </p>
+      </footer>
     </aside>
     <main id="map"></main>
   </div>
@@ -645,7 +661,11 @@ function openInfoPopover(key: string, anchor: HTMLElement) {
   infoPopoverBody.innerHTML = `
     <p><strong>What it does</strong><br>${info.whatItDoes}</p>
     <p><strong>Where to get it</strong><br>${info.whereToGetIt}</p>
-    <p><strong>Dissertation connection</strong><br>${info.dissertationConnection}</p>
+    <p><strong>Relation to the source dissertation</strong><br>
+      Y. Dai, <em>Wind Machines for Frost Damage Mitigation</em>
+      (<a href="${DISSERTATION_URL}" target="_blank" rel="noopener noreferrer">TU Delft PhD dissertation, 2025 &#8599;</a>)
+      &mdash; ${info.dissertationConnection}
+    </p>
   `;
   infoPopover.dataset.openFor = key;
   infoPopover.hidden = false;

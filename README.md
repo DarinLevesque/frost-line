@@ -158,7 +158,9 @@ application.
 ## The science
 
 Placement footprint and warming numbers come from Yi Dai, *Wind Machines for
-Frost Damage Mitigation* (TU Delft PhD dissertation, 2025):
+Frost Damage Mitigation* (TU Delft PhD dissertation, 2025;
+DOI: [10.4233/uuid:7000b291-671c-4ab3-86fa-beeff39bf5df](https://doi.org/10.4233/uuid:7000b291-671c-4ab3-86fa-beeff39bf5df),
+full text via the TU Delft Repository):
 
 - +3 K average in-canopy warming within 40 minutes of startup
 - 30–50% reduction in inversion strength (30% over 2.66 ha, 50% over 0.45 ha)

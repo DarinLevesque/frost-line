@@ -384,6 +384,27 @@ body { background: var(--paper); color: var(--ink); }
   color: var(--cold);
 }
 
+.sources-footer {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.sources-footer strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+}
+.sources-footer p {
+  margin: 0;
+  line-height: 1.4;
+}
+.sources-footer a {
+  color: var(--cold);
+}
+
 .field-label-row {
   display: flex;
   align-items: center;
