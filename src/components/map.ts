@@ -154,18 +154,22 @@ export function initFrostMap(containerId: string): FrostMap {
     },
     renderRiskGrid(cells) {
       // FortyGuard's real risk scores for this use case cluster tightly
-      // (often ~1-2%), which the fixed absolute color buckets below would
-      // otherwise paint as one uniform pale color. Normalize against this
-      // run's own max risk score so the grid shows meaningful contrast
-      // between "highest risk on this property" and "lowest" — the
-      // tooltip text still reports the real absolute risk percentage.
-      const maxRiskScore = cells.reduce(
-        (max, c) => Math.max(max, c.riskScore),
-        0
-      );
+      // (often within a percentage point or two of each other), which the
+      // fixed absolute color buckets below would otherwise paint as one
+      // uniform color across the whole grid — dividing by the max alone
+      // isn't enough to fix that, since a narrow absolute spread (say
+      // 1.8%-2.1%) stays narrow after dividing by its own max too. Instead,
+      // min-max stretch each cell's risk across this run's own low..high
+      // range so the full pale-to-red bucket scale is used to show *relative*
+      // risk on this property — the tooltip text still reports the real
+      // absolute risk percentage.
+      const riskScores = cells.map((c) => c.riskScore);
+      const minRiskScore = Math.min(...riskScores);
+      const maxRiskScore = Math.max(...riskScores);
+      const riskRange = maxRiskScore - minRiskScore;
       for (const cell of cells) {
         const normalizedRisk =
-          maxRiskScore > 0 ? cell.riskScore / maxRiskScore : 0;
+          riskRange > 0 ? (cell.riskScore - minRiskScore) / riskRange : 0;
         L.geoJSON(cell.polygon as any, {
           style: {
             color: "#14212b",
