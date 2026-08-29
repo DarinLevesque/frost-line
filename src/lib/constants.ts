@@ -95,6 +95,4 @@ export const FORTYGUARD_NOTES = {
   analyticTypeUsed:
     "exceedance, direction 'below' — FortyGuard's own model counts hours below our LT50 threshold per tile, so we don't re-derive risk from raw samples.",
   areaLimits: "10 mi² on API Basic, 50 mi² on API Premium, per heatmap request.",
-  unconfirmed:
-    "The exact property name for a tile's exceedance-hours value inside map_data — the docs' result schema shows it as a placeholder. Verify against a real response once a key is available (see fortyguard.ts).",
 } as const;

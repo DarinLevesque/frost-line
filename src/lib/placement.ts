@@ -6,8 +6,24 @@ import { WIND_MACHINE_FOOTPRINT_M } from "./constants";
 export interface PlacementOptions {
   /** Compass bearing (0=N, 90=E) the wind blows TOWARD on a typical cold clear night. */
   windBearingDeg: number;
-  /** Stop adding machines once average cell risk drops below this. */
-  riskFloor?: number;
+  /**
+   * Stop adding machines once a candidate cell's riskScore drops below this
+   * FRACTION of the field's own highest-risk cell (e.g. 0.4 = stop once a
+   * cell scores under 40% of the worst cell on this property). Relative,
+   * not absolute, on purpose: FortyGuard's raw risk fractions currently run
+   * low for sub-freezing radiative frost (see README "Known Limitations"),
+   * so a fixed absolute floor tuned for one property's numbers silently
+   * recommends zero machines on another. A relative floor ranks cells
+   * against each other instead, so it keeps working regardless of the
+   * absolute magnitude the model reports.
+   */
+  relativeRiskFloor?: number;
+  /**
+   * Absolute backstop — never place a machine on a cell at or below this
+   * riskScore, even if the relative floor would allow it (guards against
+   * placing machines across a genuinely zero-risk field).
+   */
+  minRiskScore?: number;
   /** Hard cap on machine count, regardless of remaining risk. */
   maxMachines?: number;
   footprint?: typeof WIND_MACHINE_FOOTPRINT_M;
@@ -70,11 +86,21 @@ export function planPlacements(
   cells: RiskCell[],
   options: PlacementOptions
 ): MachinePlacement[] {
-  const { windBearingDeg, riskFloor = 0.05, maxMachines = 12, footprint } =
-    options;
+  const {
+    windBearingDeg,
+    relativeRiskFloor = 0.4,
+    minRiskScore = 0.001,
+    maxMachines = 12,
+    footprint,
+  } = options;
 
   const remaining = new Map(cells.map((c) => [c.id, c]));
   const placements: MachinePlacement[] = [];
+
+  // Derive the actual stop-threshold from THIS field's own risk range, not
+  // a hardcoded absolute number — see relativeRiskFloor doc above.
+  const maxRiskScore = cells.reduce((max, c) => Math.max(max, c.riskScore), 0);
+  const riskFloor = Math.max(maxRiskScore * relativeRiskFloor, minRiskScore);
 
   while (remaining.size > 0 && placements.length < maxMachines) {
     const candidate = [...remaining.values()].sort(
