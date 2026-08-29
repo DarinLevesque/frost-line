@@ -119,6 +119,47 @@ body { background: var(--paper); color: var(--ink); }
 .assumptions { margin: 0; padding-left: 18px; font-size: 0.8rem; color: var(--muted); }
 .assumptions li { margin: 5px 0; }
 
+.results-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.results-header h2 { margin: 0; }
+.btn-small {
+  width: auto;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  border-radius: 6px;
+}
+
+.report-meta {
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.zero-risk-banner {
+  background: #fbe9df;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 4px 0 14px;
+}
+.zero-risk-banner strong {
+  display: block;
+  color: #8a3f10;
+  font-size: 0.82rem;
+  margin-bottom: 4px;
+}
+.zero-risk-banner p {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+.zero-risk-banner a { color: var(--cold); }
+
 .crosscheck-box {
   background: #eaf2f6;
   border: 1px dashed var(--cold);
@@ -579,4 +620,67 @@ body { background: var(--paper); color: var(--ink); }
 }
 .cost-row-net strong {
   color: var(--accent);
+}
+
+/* ---------------------------------------------------------------------
+ * Print / "Export PDF report": triggered by the Export PDF report button
+ * (window.print()). Reduces the page to a clean, branded, single-column
+ * report — property header, the parameters that produced this run, and
+ * the results panel — and hides everything interactive (map, boundary
+ * drawing tools, form inputs, buttons, info icons). No extra library:
+ * every modern browser's print dialog offers "Save as PDF" natively.
+ * ------------------------------------------------------------------- */
+@media print {
+  body { background: #fff; }
+  .layout { display: block; height: auto; }
+  main#map { display: none !important; }
+  .info-popover, #connection-modal { display: none !important; }
+
+  aside.panel {
+    display: block;
+    width: auto;
+    max-width: 7.5in;
+    margin: 0 auto;
+    padding: 0;
+    border-right: none;
+    overflow: visible;
+  }
+
+  .panel-header {
+    border-bottom: 2px solid var(--ink);
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+  }
+  .panel-header h1::after {
+    content: " — Frost Risk & Wind Machine Placement Report";
+    font-size: 0.6em;
+    font-weight: 500;
+    color: var(--muted);
+  }
+
+  /* Every panel section is print-hidden by default; #results (and the
+     header it lives under) is explicitly re-shown below. Keeping this
+     as an opt-in allowlist means a future new sidebar section is hidden
+     from print by default instead of silently leaking into the report. */
+  .panel-section { display: none !important; }
+  #results { display: block !important; }
+
+  .info-icon,
+  #export-pdf-btn,
+  #clear-results,
+  .badge-soon { display: none !important; }
+  .results-header { display: block !important; }
+  .results-header h2 { margin-bottom: 10px; }
+
+  .zero-risk-banner,
+  .crosscheck-box { break-inside: avoid; }
+  .cost-box, .savings-box { break-inside: avoid; }
+
+  a { color: var(--ink); text-decoration: underline; }
+  a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.68em;
+    color: var(--muted);
+    word-break: break-all;
+  }
 }

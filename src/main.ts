@@ -210,8 +210,25 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       </section>
 
       <section class="panel-section" id="results" hidden>
-        <h2>Results</h2>
+        <div class="results-header">
+          <h2>Results</h2>
+          <button type="button" id="export-pdf-btn" class="btn btn-ghost btn-small">Export PDF report</button>
+        </div>
         <p class="hint data-note" id="results-source-note"></p>
+        <p class="hint report-meta" id="report-meta"></p>
+        <div class="zero-risk-banner" id="zero-risk-banner" hidden>
+          <strong>No machines recommended for this run.</strong>
+          <p>
+            FortyGuard's live risk data for this property and window came back
+            at effectively zero — this isn't a bug in the placement logic,
+            it's a known limitation in FortyGuard's cold-temperature data (see
+            <a href="https://github.com/DarinLevesque/frost-line#known-limitations" target="_blank" rel="noopener noreferrer">Known limitations &#8599;</a>).
+            The independent cross-check below (if shown) compares FortyGuard's
+            number against a second data source for this same property. Try
+            the Bud Burst growth stage on the demo property, or a different
+            boundary, to see a run with measurable risk.
+          </p>
+        </div>
         <div class="stat-row">
           <div class="stat"><strong id="stat-machines">–</strong><span>machines recommended</span></div>
           <div class="stat"><strong id="stat-acres">–</strong><span>acres protected / analyzed</span></div>
@@ -713,6 +730,16 @@ window.addEventListener("resize", () => {
 
 const resultsSection = document.querySelector<HTMLElement>("#results")!;
 const clearResultsBtn = document.querySelector<HTMLButtonElement>("#clear-results")!;
+const exportPdfBtn = document.querySelector<HTMLButtonElement>("#export-pdf-btn")!;
+const zeroRiskBanner = document.querySelector<HTMLElement>("#zero-risk-banner")!;
+const reportMeta = document.querySelector<HTMLElement>("#report-meta")!;
+
+// PDF export: the browser's own print pipeline, styled by the @media
+// print rules in style.css (hides the map/inputs, keeps only the
+// results panel plus a report header) — no extra dependencies, no
+// screenshot/CORS issues with the Leaflet tiles, and "Save as PDF" is a
+// stock option in every modern browser's print dialog.
+exportPdfBtn.addEventListener("click", () => window.print());
 
 /** Hide the results panel and wipe the risk grid / placement markers, without touching the drawn boundary. */
 function resetResults() {
@@ -897,6 +924,20 @@ analyzeBtn.addEventListener("click", async () => {
   resultsSection.hidden = false;
   clearResultsBtn.hidden = false;
   resultsSourceNote.textContent = sourceNote;
+
+  const growthStageLabel =
+    document.querySelector<HTMLSelectElement>("#growth-stage")!
+      .selectedOptions[0]?.textContent ?? growthStage;
+  const windReadout =
+    document.querySelector("#compass-readout")?.textContent ?? `${windBearingDeg}°`;
+  reportMeta.textContent =
+    `Growth stage: ${growthStageLabel} · Wind (blowing toward): ${windReadout} · ` +
+    `Crop value: $${cropValuePerAcre.toLocaleString()}/acre · Frost nights/season: ${frostNightsPerSeason} · ` +
+    `Machine: ${DEFAULT_WIND_MACHINE_PROFILE.name} ($${installedCostPerMachine.toLocaleString()}/machine) · ` +
+    `Report generated ${new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}.`;
+
+  zeroRiskBanner.hidden = placements.length !== 0;
+
   document.querySelector("#stat-machines")!.textContent = String(
     placements.length
   );
