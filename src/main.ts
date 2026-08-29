@@ -243,6 +243,10 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
           <div class="cost-row cost-row-net"><span>Net annual savings (after fuel)</span><strong id="stat-net-savings">–</strong></div>
           <div class="cost-row"><span>Rough payback period</span><strong id="stat-payback">–</strong></div>
         </div>
+        <div class="machine-locations-box" id="machine-locations-box" hidden>
+          <div class="machine-locations-header">Recommended wind machine locations</div>
+          <ol class="machine-locations-list" id="machine-locations-list"></ol>
+        </div>
         <ul class="assumptions" id="assumptions"></ul>
         <div class="crosscheck-box" id="crosscheck-box" hidden>
           <div class="crosscheck-header">
@@ -733,6 +737,8 @@ const clearResultsBtn = document.querySelector<HTMLButtonElement>("#clear-result
 const exportPdfBtn = document.querySelector<HTMLButtonElement>("#export-pdf-btn")!;
 const zeroRiskBanner = document.querySelector<HTMLElement>("#zero-risk-banner")!;
 const reportMeta = document.querySelector<HTMLElement>("#report-meta")!;
+const machineLocationsBox = document.querySelector<HTMLElement>("#machine-locations-box")!;
+const machineLocationsList = document.querySelector<HTMLOListElement>("#machine-locations-list")!;
 
 // PDF export: the browser's own print pipeline, styled by the @media
 // print rules in style.css (hides the map/inputs, keeps only the
@@ -968,5 +974,18 @@ analyzeBtn.addEventListener("click", async () => {
     ...machineCost.assumptions,
   ]
     .map((a) => `<li>${a}</li>`)
+    .join("");
+
+  machineLocationsBox.hidden = placements.length === 0;
+  machineLocationsList.innerHTML = placements
+    .map((p) => {
+      const lat = p.lat.toFixed(5);
+      const lng = p.lng.toFixed(5);
+      const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+      return (
+        `<li><strong>${p.id}</strong> &mdash; ${lat}, ${lng} ` +
+        `(<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer">view on map &#8599;</a>)</li>`
+      );
+    })
     .join("");
 });

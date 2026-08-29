@@ -153,13 +153,25 @@ export function initFrostMap(containerId: string): FrostMap {
       boundaryChangeCb(null);
     },
     renderRiskGrid(cells) {
+      // FortyGuard's real risk scores for this use case cluster tightly
+      // (often ~1-2%), which the fixed absolute color buckets below would
+      // otherwise paint as one uniform pale color. Normalize against this
+      // run's own max risk score so the grid shows meaningful contrast
+      // between "highest risk on this property" and "lowest" — the
+      // tooltip text still reports the real absolute risk percentage.
+      const maxRiskScore = cells.reduce(
+        (max, c) => Math.max(max, c.riskScore),
+        0
+      );
       for (const cell of cells) {
+        const normalizedRisk =
+          maxRiskScore > 0 ? cell.riskScore / maxRiskScore : 0;
         L.geoJSON(cell.polygon as any, {
           style: {
             color: "#14212b",
             weight: 0.5,
             opacity: 0.25,
-            fillColor: riskColor(cell.riskScore),
+            fillColor: riskColor(normalizedRisk),
             fillOpacity: 0.55,
           },
         })
@@ -176,7 +188,12 @@ export function initFrostMap(containerId: string): FrostMap {
     },
     renderPlacements(placements) {
       for (const p of placements) {
+        // interactive: false so this coverage-footprint overlay (added on
+        // top of the risk grid) never steals hover/click events from the
+        // grid cells beneath it — otherwise the per-tile risk/temperature
+        // tooltip becomes unreachable wherever a footprint overlaps.
         L.geoJSON(p.footprint as any, {
+          interactive: false,
           style: {
             color: "#2f6f8f",
             weight: 1.5,

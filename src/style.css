@@ -622,6 +622,39 @@ body { background: var(--paper); color: var(--ink); }
   color: var(--accent);
 }
 
+.machine-locations-box {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.machine-locations-header {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.machine-locations-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: var(--ink);
+}
+.machine-locations-list strong {
+  font-family: inherit;
+  color: var(--ink);
+}
+.machine-locations-list a {
+  color: var(--accent);
+}
+
 /* ---------------------------------------------------------------------
  * Print / "Export PDF report": triggered by the Export PDF report button
  * (window.print()). Reduces the page to a clean, branded, single-column
@@ -675,6 +708,7 @@ body { background: var(--paper); color: var(--ink); }
   .zero-risk-banner,
   .crosscheck-box { break-inside: avoid; }
   .cost-box, .savings-box { break-inside: avoid; }
+  .machine-locations-box { break-inside: avoid; }
 
   a { color: var(--ink); text-decoration: underline; }
   a[href^="http"]::after {
