@@ -199,6 +199,24 @@ speed).
   direct, shipped response to this finding — the tool keeps recommending a
   sensible plan today, and gets more accurate automatically if FortyGuard's
   absolute numbers are refined.
+- **Per-tile risk scores cluster within a very narrow absolute band** — on
+  the demo property, a full analysis run's real spread across all ~110
+  tiles was as tight as 1.35%–1.37%. This isn't a display bug: the risk
+  score is hours-below-threshold divided by *every* hour in the spring
+  window (24/day), and roughly half of those hours are daytime hours that
+  can never register as sub-freezing regardless of true frost risk — a
+  structural dilution effect of scoring against a full-day denominator,
+  not noise. We looked into asking FortyGuard's Create Heatmap endpoint for
+  nighttime-only hours across a multi-day range to fix this at the source,
+  but confirmed against their live API docs that no `filter_type` supports
+  it — the mode with hour-of-day filtering is single-day only, and the
+  multi-day mode has no time-of-day field at all. Doing it anyway would
+  mean roughly 90+ separate requests per season instead of one, which
+  wasn't a responsible tradeoff to make under a deadline. Instead, the app
+  is honest about it: tile color is normalized to each run's own relative
+  low↔high range (so "reddest" vs. "palest" always means something), and
+  every tile's tooltip states that run's real absolute range directly,
+  rather than implying more differentiation than the raw numbers support.
 - **Wind direction is a manual/estimated input.** The app offers a one-click
   "estimate from historical wind data" (Open-Meteo), but a grower should
   confirm it against local knowledge — FortyGuard's own payload does not
