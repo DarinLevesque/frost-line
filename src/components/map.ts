@@ -40,13 +40,28 @@ export interface FrostMap {
   onBoundaryChange: (cb: (geojson: Boundary | null) => void) => void;
 }
 
-/** Color scale for risk 0..1 — pale straw to deep frost-red, low to high. */
-function riskColor(risk: number): string {
-  if (risk < 0.05) return "#dfe7e2";
-  if (risk < 0.15) return "#bfe3c9";
-  if (risk < 0.3) return "#f0d98c";
-  if (risk < 0.5) return "#e8a24f";
-  return "#c0432f";
+/**
+ * Color scale AND its matching plain-language label, keyed off the same
+ * normalized-to-this-run risk value (0..1, see renderRiskGrid) so the color
+ * a user sees on the map and the words in its tooltip can never drift apart.
+ * Real FortyGuard risk scores for this use case cluster within a point or
+ * two of each other absolute-percentage-wise — the color/label pair is what
+ * tells a user "this is the highest-risk spot on THIS property," which the
+ * raw percentage alone doesn't communicate at a glance.
+ */
+const RISK_BUCKETS: { max: number; color: string; label: string }[] = [
+  { max: 0.05, color: "#dfe7e2", label: "Lowest risk on this property" },
+  { max: 0.15, color: "#bfe3c9", label: "Low risk on this property" },
+  { max: 0.3, color: "#f0d98c", label: "Moderate risk on this property" },
+  { max: 0.5, color: "#e8a24f", label: "Elevated risk on this property" },
+  { max: Infinity, color: "#c0432f", label: "Highest risk on this property" },
+];
+
+function riskBucket(normalizedRisk: number): { color: string; label: string } {
+  return (
+    RISK_BUCKETS.find((b) => normalizedRisk < b.max) ??
+    RISK_BUCKETS[RISK_BUCKETS.length - 1]
+  );
 }
 
 export function initFrostMap(containerId: string): FrostMap {
@@ -170,21 +185,31 @@ export function initFrostMap(containerId: string): FrostMap {
       for (const cell of cells) {
         const normalizedRisk =
           riskRange > 0 ? (cell.riskScore - minRiskScore) / riskRange : 0;
+        const bucket = riskBucket(normalizedRisk);
         L.geoJSON(cell.polygon as any, {
           style: {
             color: "#14212b",
             weight: 0.5,
             opacity: 0.25,
-            fillColor: riskColor(normalizedRisk),
+            fillColor: bucket.color,
             fillOpacity: 0.55,
           },
         })
           .bindTooltip(
-            `Risk ${Math.round(cell.riskScore * 100)}%` +
-              `${cell.worstSeasonYear !== undefined ? ` (worst season: ${cell.worstSeasonYear})` : ""}` +
+            // Lead with the plain-language color/relative-risk label (the
+            // same bucket that picked this tile's fill color) so a judge
+            // reading one tooltip immediately knows what "red" vs "pale"
+            // means here, since the real absolute percentages that follow
+            // are all naturally small (well under 5%) and easy to misread
+            // as "basically the same" at a glance — one decimal place
+            // instead of a rounded whole percent is enough to show real
+            // tile-to-tile differences (e.g. 1.4% vs 2.3%) that Math.round
+            // used to erase.
+            `${bucket.label} · Risk ${(cell.riskScore * 100).toFixed(1)}%` +
+              `${cell.worstSeasonYear !== undefined ? ` (worst spring: ${cell.worstSeasonYear})` : ""}` +
               `${cell.worstTempF !== null ? ` · worst ${cell.worstTempF.toFixed(1)}°F` : ""}` +
-              ` · ${cell.coldHourCount}/${cell.sampleCount} below threshold` +
-              `${cell.typicalRiskScore !== undefined ? ` · typical season ${Math.round(cell.typicalRiskScore * 100)}%` : ""}`,
+              ` · ${cell.coldHourCount.toFixed(0)}/${cell.sampleCount} spring hours below threshold` +
+              `${cell.typicalRiskScore !== undefined ? ` · typical spring ${(cell.typicalRiskScore * 100).toFixed(1)}%` : ""}`,
             { sticky: true }
           )
           .addTo(analysisLayer);
